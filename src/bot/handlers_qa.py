@@ -12,12 +12,14 @@ from zoneinfo import ZoneInfo
 from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 
+from src.bot.handlers_feedback import feedback_keyboard
 from src.config import cfg
 from src.db import repo
 from src.db.models import Chat
 from src.digest import pipeline as digest_pipeline
 from src.digest import prompts
-from src.digest.render import DigestData, deeplink, esc_html, render_html, split_message
+from src.digest.render import DigestData, deeplink, esc_html, split_message
+from src.digest.scheduler import send_digest
 from src.llm.client import chat_json
 from src.rag.answer import answer_question
 
@@ -31,6 +33,7 @@ HELP = """\
 (можно просто написать вопрос без команды)
 /digest — дайджест за сегодня
 /digest 2026-09-15 — за конкретный день
+/missed — темы, не прошедшие порог
 /week — сводка за 7 дней
 /search запрос — 10 сообщений со ссылками, без обращения к модели
 /topics — темы за 30 дней
@@ -161,8 +164,14 @@ async def on_digest(message: types.Message, command: CommandObject) -> None:
     for chat in chats:
         stored = await repo.get_digest(chat.id, day)
         if stored and stored.payload:
-            # готовый дайджест собираем заново из сохранённой структуры
-            await send_long(message, render_html(DigestData.from_dict(stored.payload)))
+            # готовый дайджест собираем заново из сохранённой структуры,
+            # кнопки берут id тем из БД
+            data = DigestData.from_dict(stored.payload)
+            items = await repo.get_digest_items(stored.id or 0, shown=True)
+            by_thread = {row["thread_id"]: row["id"] for row in items}
+            for topic in data.topics:
+                topic.item_id = by_thread.get(topic.thread_id)
+            await send_digest(message.bot, message.chat.id, data, topics=data.topics)
             continue
 
         await message.answer(f"Собираю дайджест «{chat.title or chat.tg_id}» за {day}…")
@@ -172,7 +181,48 @@ async def on_digest(message: types.Message, command: CommandObject) -> None:
             log.exception("Дайджест за %s не собрался", day)
             await message.answer(f"Не получилось: {esc_html(str(exc))}", parse_mode="HTML")
             continue
-        await send_long(message, result.html)
+        await send_digest(message.bot, message.chat.id, result.data, topics=result.topics)
+
+
+@router.message(Command("missed"))
+async def on_missed(message: types.Message, command: CommandObject) -> None:
+    """Темы, которые не прошли порог (TZ §4.7).
+
+    Если там нашлось важное, 👍 на нём тоже учится — именно так порог и
+    настраивается под вкус владельца.
+    """
+    raw = (command.args or "").strip()
+    try:
+        day = date_type.fromisoformat(raw) if raw else _today()
+    except ValueError:
+        await message.answer("Дату нужно писать как 2026-09-15")
+        return
+
+    chats = await _digest_chats()
+    found = False
+    for chat in chats:
+        stored = await repo.get_digest(chat.id, day)
+        if stored is None or stored.id is None:
+            continue
+        items = await repo.get_digest_items(stored.id, shown=False)
+        if not items:
+            continue
+        found = True
+        threshold = 0.0
+        for item in items:
+            threshold = (item["features"] or {}).get("threshold", 0.0)
+            takeaway = (item["features"] or {}).get("takeaway", "")
+            text = (
+                f"<b>{esc_html(str(item['title'] or ''))}</b>\n"
+                f"{esc_html(takeaway)}\n"
+                f"<i>скор {item['score']:.2f} при пороге {threshold:.2f}</i>"
+            )
+            await message.answer(
+                text, parse_mode="HTML", reply_markup=feedback_keyboard(item["id"])
+            )
+
+    if not found:
+        await message.answer(f"За {day} отсеянных тем нет.")
 
 
 @router.message(Command("week"))

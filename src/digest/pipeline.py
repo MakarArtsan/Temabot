@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as date_type
 from datetime import datetime
 from typing import Any
@@ -22,6 +22,10 @@ from src.digest import prompts
 from src.digest.render import DigestData, Topic, render, render_html
 from src.llm.client import Usage, chat_json
 from src.nlp.threads import Thread, segment
+from src.scoring import score as scoring
+from src.scoring.llm_rubric import Rubric, rate_thread
+from src.scoring.novelty import score_novelty
+from src.scoring.signals import ThreadSignals, collect_signals, engagement, normalize
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +82,7 @@ class DigestResult:
     usage: Usage
     msg_count: int
     data: DigestData | None = None
+    all_topics: list[Topic] = field(default_factory=list)  # включая отсеянные (/missed)
     mapped: int = 0            # тредов разобрано моделью
     failed: int = 0            # тредов, на которых модель не ответила
     digest_id: int | None = None
@@ -190,23 +195,55 @@ def _as_contributors(value: Any, thread: Thread) -> list[dict]:
     return result
 
 
-# ---------------------------------------------------------------- reduce
+# ---------------------------------------------------------------- reduce (§4.7)
 
-def engagement_score(topic: Topic) -> float:
-    """Временный отбор по вовлечённости. На шаге 11 заменяется скорингом §4.7."""
-    return (
-        len(topic.participants) * 2.0
-        + topic.msg_count
-        + topic.reactions * 1.5
-        + (3.0 if topic.decision else 0.0)
-        + (1.0 if topic.links else 0.0)
+async def score_topic(
+    topic: Topic,
+    thread: Thread,
+    chat: Chat,
+    *,
+    signals: ThreadSignals,
+    peers: list[ThreadSignals],
+    history: dict[str, list[float]],
+    recent_embeddings: list[list[float]],
+    examples: list[dict[str, Any]],
+    llm: LLMCall = chat_json,
+) -> tuple[scoring.Scored, Usage]:
+    """Три слоя отбора: сигналы, рубрика модели, новизна (TZ §4.7)."""
+    normalized = normalize(signals, history, peers=peers)
+    engagement_value = engagement(normalized)
+
+    try:
+        rubric, usage = await rate_thread(thread, chat, examples=examples, llm=llm)
+    except Exception:
+        # без рубрики тема не выбывает: остаются сигналы и новизна
+        log.warning("Рубрика недоступна для треда %s", thread.root_msg_id)
+        rubric, usage = Rubric(), Usage()
+
+    novelty, embedding, similarity = await score_novelty(
+        topic.title, rubric.takeaway, recent_embeddings
     )
 
+    result = scoring.compute(
+        engagement=engagement_value,
+        rubric=rubric,
+        novelty=novelty,
+        normalized=normalized,
+        settings=chat.settings,
+        similarity=similarity,
+    )
+    result.features["raw_signals"] = signals.as_dict()
+    result.features["takeaway"] = rubric.takeaway
+    result.features["why"] = rubric.why
 
-def rank_topics(topics: list[Topic], *, top_n: int = DEFAULT_TOP_N) -> list[Topic]:
-    for topic in topics:
-        topic.score = engagement_score(topic)
-    return sorted(topics, key=lambda t: t.score, reverse=True)[:top_n]
+    topic.score = result.score
+    topic.kind = rubric.kind
+    topic.takeaway = rubric.takeaway
+    topic.why = rubric.why
+    topic.features = result.features
+    topic.embedding = embedding
+    topic.shown = result.passed
+    return result, usage
 
 
 async def make_highlights(
@@ -262,12 +299,26 @@ async def build_digest(
     meaningful, noise = split_noise(messages)
     threads = segment(meaningful)
 
+    # всё, что нужно скорингу, читаем один раз на весь день
+    authors = await repo.list_author_weights()
+    history = await repo.signal_history(chat.id, before=day)
+    recent_embeddings = await repo.recent_topic_embeddings(chat.id, before=day)
+    examples = await repo.feedback_examples(chat.id)
+
+    live = [t for t in threads if not t.low_value]
+    peers = [
+        collect_signals(
+            t, owner_id=cfg.OWNER_ID,
+            author_weights=authors["weights"], muted_authors=authors["muted"],
+        )
+        for t in live
+    ]
+
     total_usage = Usage()
-    topics: list[Topic] = []
+    pairs: list[tuple[Topic, scoring.Scored]] = []
     mapped = failed = 0
-    for thread in threads:
-        if thread.low_value:
-            continue
+
+    for thread, signals in zip(live, peers, strict=True):
         try:
             topic, usage = await map_thread(thread, chat, llm=llm)
         except Exception:
@@ -276,12 +327,23 @@ async def build_digest(
             continue
         mapped += 1
         total_usage = total_usage + usage
-        if topic is not None:
-            topics.append(topic)
+        if topic is None:
+            continue
 
-    settings = chat.settings or {}
-    limit = top_n if top_n is not None else int(settings.get("top_n", DEFAULT_TOP_N))
-    selected = rank_topics(topics, top_n=limit)
+        result, usage = await score_topic(
+            topic, thread, chat,
+            signals=signals, peers=peers, history=history,
+            recent_embeddings=recent_embeddings, examples=examples, llm=llm,
+        )
+        total_usage = total_usage + usage
+        pairs.append((topic, result))
+
+    settings = dict(chat.settings or {})
+    if top_n is not None:
+        settings["top_n"] = top_n
+    selected, missed = scoring.select(pairs, settings=settings)
+    for topic in missed:
+        topic.shown = False
 
     highlights, usage = await make_highlights(selected, chat, llm=llm)
     total_usage = total_usage + usage
@@ -315,6 +377,7 @@ async def build_digest(
         usage=total_usage,
         msg_count=len(messages),
         data=data,
+        all_topics=[t for t, _ in pairs],
         mapped=mapped,
         failed=failed,
     )
@@ -340,7 +403,29 @@ async def run_for_chat(
             msg_count=result.msg_count,
             tokens_used=result.usage.tokens_in + result.usage.tokens_out,
         )
+        # отсеянные темы тоже сохраняем: они нужны для /missed и для обучения
+        item_ids = await repo.save_digest_items(
+            result.digest_id,
+            chat.id,
+            [_topic_as_item(t) for t in result.all_topics],
+        )
+        for topic, item_id in zip(result.all_topics, item_ids, strict=False):
+            topic.item_id = item_id
     return result
+
+
+def _topic_as_item(topic: Topic) -> dict[str, Any]:
+    from src.nlp.embed import to_pgvector
+
+    return {
+        "thread_id": topic.thread_id,
+        "title": topic.title,
+        "kind": topic.kind,
+        "features": topic.features,
+        "score": topic.score,
+        "shown": topic.shown,
+        "embedding": to_pgvector(topic.embedding) if topic.embedding else None,
+    }
 
 
 async def _main() -> None:

@@ -17,7 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 from src.config import cfg
 from src.db import repo
 from src.digest import pipeline as digest_pipeline
-from src.digest.render import split_message
+from src.digest.render import DigestData, digest_parts, split_message
+from src.jobs.retrain import retrain_all
 from src.rag.index import index_all
 
 log = logging.getLogger(__name__)
@@ -45,11 +46,7 @@ async def send_daily_digests(bot: Any, *, day: date_type | None = None) -> int:
             continue
 
         try:
-            for part in split_message(result.html):
-                await bot.send_message(
-                    cfg.OWNER_ID, part, parse_mode="HTML",
-                    link_preview_options={"is_disabled": True},
-                )
+            await send_digest(bot, cfg.OWNER_ID, result.data, topics=result.topics)
             sent += 1
         except Exception:
             log.exception("Не удалось отправить дайджест группы %s", chat.tg_id)
@@ -59,6 +56,40 @@ async def send_daily_digests(bot: Any, *, day: date_type | None = None) -> int:
         {"day": day.isoformat(), "sent": sent, "at": datetime.now(ZoneInfo(cfg.TZ)).isoformat()},
     )
     log.info("Дайджестов отправлено: %s из %s", sent, len(chats))
+    return sent
+
+
+async def send_digest(
+    bot: Any, chat_id: int, data: DigestData | None, *, topics: list[Any] | None = None
+) -> int:
+    """Отправить дайджест: шапка, темы с кнопками оценки, хвост (TZ §4.7).
+
+    Возвращает число отправленных сообщений.
+    """
+    from src.bot.handlers_feedback import feedback_keyboard
+
+    if data is None:
+        return 0
+
+    by_thread = {t.thread_id: t for t in (topics or [])}
+    sent = 0
+    for text, topic in digest_parts(data):
+        markup = None
+        if topic is not None:
+            # id темы известен только после сохранения в БД
+            stored = by_thread.get(topic.thread_id)
+            item_id = getattr(stored, "item_id", None) or getattr(topic, "item_id", None)
+            if item_id:
+                markup = feedback_keyboard(item_id)
+        chunks = split_message(text)
+        for index, chunk in enumerate(chunks):
+            # кнопки вешаем на последний кусок: под ним они и видны
+            await bot.send_message(
+                chat_id, chunk, parse_mode="HTML",
+                link_preview_options={"is_disabled": True},
+                reply_markup=markup if index == len(chunks) - 1 else None,
+            )
+            sent += 1
     return sent
 
 
@@ -90,6 +121,13 @@ def build_scheduler(bot: Any, *, digest_time: time | None = None) -> AsyncIOSche
         replace_existing=True,
         coalesce=True,
         max_instances=1,        # индексация может идти дольше часа на большой истории
+    )
+    scheduler.add_job(
+        retrain_all,
+        CronTrigger(day_of_week="mon", hour=4, minute=0, timezone=zone),
+        id="retrain",
+        replace_existing=True,
+        coalesce=True,
     )
     scheduler.add_job(
         heartbeat,

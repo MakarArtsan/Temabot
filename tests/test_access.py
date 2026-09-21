@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from src.bot import handlers_admin as admin
 from src.bot import handlers_qa
 from src.bot.middlewares import CopierAccess, CopierRateLimit, SettingsCache
@@ -78,7 +77,8 @@ async def test_middleware_stops_the_handler():
         called = True
         return "ok"
 
-    from aiogram.types import Chat as TgChat, Message as TgMessage
+    from aiogram.types import Chat as TgChat
+    from aiogram.types import Message as TgMessage
 
     message = TgMessage.model_construct(
         message_id=1, chat=TgChat(id=GROUP, type="supergroup"), text="@bot текст"

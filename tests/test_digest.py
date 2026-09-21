@@ -109,14 +109,31 @@ def test_split_noise_counts_both_sides():
 
 # ============================================================== map-стадия
 
-def fake_llm(payload: Any, *, fail: bool = False):
-    """Подделка chat_json: возвращает заранее заданный ответ."""
+GOOD_RUBRIC = {
+    "kind": "decision",
+    "usefulness": 8,
+    "specificity": 7,
+    "relevance": 8,
+    "takeaway": "вывод одной строкой",
+    "why": "три человека независимо поймали",
+}
+
+
+def fake_llm(payload: Any, *, fail: bool = False, rubric: Any = None):
+    """Подделка chat_json.
+
+    Конвейер делает два вызова на тред: разбор (purpose=summary) и оценку по
+    рубрике (purpose=score). По умолчанию рубрика отвечает «хорошей» темой,
+    иначе всё отсеивалось бы порогом.
+    """
     calls: list[dict[str, Any]] = []
 
     async def call(messages, *, purpose: str, chat_id: int | None = None, **kw: Any):
         calls.append({"messages": messages, "purpose": purpose, "chat_id": chat_id})
         if fail:
             raise RuntimeError("модель недоступна")
+        if purpose == "score":
+            return (rubric if rubric is not None else GOOD_RUBRIC), Usage(80, 40, "test-model")
         value = payload(calls) if callable(payload) else payload
         return value, Usage(100, 50, "test-model")
 
@@ -208,27 +225,6 @@ def topic(title: str, **kw: Any) -> Topic:
     return Topic(**defaults)
 
 
-def test_ranking_prefers_discussion_over_monologue():
-    busy = topic("живое обсуждение", participants=["a", "b", "c"], msg_count=12)
-    quiet = topic("монолог", participants=["a"], msg_count=3)
-
-    assert [t.title for t in dp.rank_topics([quiet, busy])] == [
-        "живое обсуждение", "монолог"
-    ]
-
-
-def test_ranking_respects_top_n():
-    topics = [topic(f"тема {n}", msg_count=n) for n in range(10)]
-    assert len(dp.rank_topics(topics, top_n=6)) == 6
-
-
-def test_decision_raises_the_score():
-    with_decision = topic("с выводом", msg_count=5, decision="делать так")
-    without = topic("без вывода", msg_count=5)
-
-    assert dp.engagement_score(with_decision) > dp.engagement_score(without)
-
-
 async def test_highlights_are_limited_to_three():
     llm = fake_llm({"highlights": ["раз", "два", "три", "четыре"]})
     highlights, _ = await dp.make_highlights([topic("тема")], chat(), llm=llm)
@@ -296,6 +292,31 @@ def test_link_falls_back_to_thread_start():
 
 
 # ========================================================= сборка целиком
+
+@pytest.fixture(autouse=True)
+def no_scoring_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Скоринг читает веса авторов, историю сигналов и примеры оценок."""
+    async def author_weights() -> dict[str, Any]:
+        return {"weights": {}, "muted": set()}
+
+    async def empty_history(*a: Any, **kw: Any) -> dict[str, list[float]]:
+        return {}
+
+    async def empty_list(*a: Any, **kw: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(dp.repo, "list_author_weights", author_weights)
+    monkeypatch.setattr(dp.repo, "signal_history", empty_history)
+    monkeypatch.setattr(dp.repo, "recent_topic_embeddings", empty_list)
+    monkeypatch.setattr(dp.repo, "feedback_examples", empty_list)
+
+    async def no_embedding(text: str) -> list[float]:
+        raise RuntimeError("эмбеддинги в тесте не нужны")
+
+    from src.scoring import novelty as novelty_mod
+
+    monkeypatch.setattr(novelty_mod, "embed_one", no_embedding)
+
 
 @pytest.fixture
 def day_messages(monkeypatch: pytest.MonkeyPatch) -> list[Message]:
@@ -399,6 +420,8 @@ async def test_partial_failure_still_produces_a_digest(day_messages):
     state = {"n": 0}
 
     async def flaky(messages, *, purpose: str, chat_id: int | None = None, **kw: Any):
+        if purpose == "score":
+            return GOOD_RUBRIC, Usage(80, 40, "t")
         state["n"] += 1
         if state["n"] == 1:
             raise RuntimeError("таймаут на первом треде")

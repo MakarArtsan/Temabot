@@ -258,7 +258,11 @@ async def test_one_broken_group_does_not_cancel_the_rest(monkeypatch: pytest.Mon
     async def run_for_chat(chat: Chat, day: date, **kw: Any) -> Any:
         if chat.id == 1:
             raise RuntimeError("модель не ответила")
-        return SimpleNamespace(html="<b>Дайджест</b>")
+        data = DigestData(
+            chat_tg_id=chat.tg_id, day=day, chat_title=chat.title or "",
+            highlights=["главное"], msg_count=5, participants=2,
+        )
+        return SimpleNamespace(data=data, topics=[])
 
     async def set_state(key: str, value: Any) -> None:
         return None
@@ -275,8 +279,11 @@ async def test_one_broken_group_does_not_cancel_the_rest(monkeypatch: pytest.Mon
 
     count = await sched.send_daily_digests(FakeBot(), day=date(2026, 9, 20))
 
-    assert count == 1
-    assert sent == ["<b>Дайджест</b>"]
+    assert count == 1, "сломанная группа не отменила рабочую"
+    # дайджест уходит частями: шапка, темы с кнопками, хвост со статистикой
+    assert "Рабочая" in sent[0] and "главное" in sent[0]
+    assert "5 сообщений" in sent[-1]
+    assert not any("Сломанная" in part for part in sent)
 
 
 async def test_run_records_last_run_state(monkeypatch: pytest.MonkeyPatch):

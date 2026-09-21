@@ -175,6 +175,15 @@ async def find_author(query: str) -> Author | None:
 
 # ------------------------------------------------------------------------ авторы
 
+async def list_author_weights() -> dict[str, Any]:
+    """Веса мнений и список заглушённых — для скоринга (TZ §4.7)."""
+    rows = await pool.fetch("select tg_user_id, weight, muted from authors")
+    return {
+        "weights": {int(r["tg_user_id"]): float(r["weight"]) for r in rows},
+        "muted": {int(r["tg_user_id"]) for r in rows if r["muted"]},
+    }
+
+
 async def upsert_author(tg_user_id: int, name: str | None) -> Author:
     row = await pool.fetchrow(
         """
@@ -795,6 +804,202 @@ async def set_pinned(chat_id: int, tg_msg_id: int, pinned: bool = True) -> bool:
         pinned,
     )
     return result.endswith("1")
+
+
+# --------------------------------------------------- темы дайджеста и оценки (§4.7)
+
+async def save_digest_items(
+    digest_id: int, chat_id: int, items: list[dict[str, Any]]
+) -> list[int]:
+    """Записать темы дня вместе со всеми признаками.
+
+    Повторный прогон за тот же день заменяет темы: иначе в админке и в `/missed`
+    копились бы старые версии одного и того же дня.
+    """
+    db = await pool.get_pool()
+    ids: list[int] = []
+    async with db.acquire() as conn, conn.transaction():
+        await conn.execute("delete from digest_items where digest_id = $1", digest_id)
+        for item in items:
+            row_id = await conn.fetchval(
+                """
+                insert into digest_items (digest_id, chat_id, thread_id, title, kind,
+                                          features, score, shown, embedding)
+                values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9::vector)
+                returning id
+                """,
+                digest_id,
+                chat_id,
+                item.get("thread_id"),
+                item.get("title"),
+                item.get("kind"),
+                item.get("features") or {},
+                item.get("score"),
+                item.get("shown", False),
+                item.get("embedding"),
+            )
+            ids.append(int(row_id))
+    return ids
+
+
+async def get_digest_items(
+    digest_id: int, *, shown: bool | None = None
+) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        select id, digest_id, chat_id, thread_id, title, kind, features, score, shown
+          from digest_items
+         where digest_id = $1 and ($2::bool is null or shown = $2)
+         order by score desc nulls last
+        """,
+        digest_id,
+        shown,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_digest_item(item_id: int) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        """
+        select i.*, d.day, d.chat_id as digest_chat_id
+          from digest_items i
+          left join digests d on d.id = i.digest_id
+         where i.id = $1
+        """,
+        item_id,
+    )
+    return dict(row) if row else None
+
+
+async def recent_topic_embeddings(
+    chat_id: int, *, days: int = 7, before: date_type | None = None
+) -> list[list[float]]:
+    """Эмбеддинги тем за последние дни — для проверки новизны (TZ §4.7)."""
+    last_day = before or date_type.today()
+    rows = await pool.fetch(
+        """
+        select i.embedding::text as embedding
+          from digest_items i
+          join digests d on d.id = i.digest_id
+         where i.chat_id = $1
+           and i.embedding is not null
+           and d.day >= $2::date - $3::int and d.day < $2::date
+         order by d.day desc
+         limit 200
+        """,
+        chat_id,
+        last_day,
+        days,
+    )
+    result: list[list[float]] = []
+    for row in rows:
+        raw = row["embedding"]
+        if not raw:
+            continue
+        result.append([float(x) for x in raw.strip("[]").split(",") if x])
+    return result
+
+
+async def signal_history(
+    chat_id: int, *, days: int = 30, before: date_type | None = None
+) -> dict[str, list[float]]:
+    """Значения сигналов за последние дни — база для перцентилей (TZ §4.7)."""
+    last_day = before or date_type.today()
+    rows = await pool.fetch(
+        """
+        select i.features
+          from digest_items i
+          join digests d on d.id = i.digest_id
+         where i.chat_id = $1
+           and d.day >= $2::date - $3::int and d.day <= $2::date
+         limit 2000
+        """,
+        chat_id,
+        last_day,
+        days,
+    )
+    history: dict[str, list[float]] = {}
+    for row in rows:
+        features = row["features"] or {}
+        raw = features.get("raw_signals") or {}
+        for name, value in raw.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                history.setdefault(name, []).append(float(value))
+    return history
+
+
+# ------------------------------------------------------------- обратная связь
+
+async def add_feedback(item_id: int, value: int, note: str | None = None) -> int:
+    """Оценка темы: +1 полезно, -1 мимо, -2 больше такое не показывать."""
+    row_id = await pool.fetchval(
+        """
+        insert into feedback (item_id, value, note) values ($1, $2, $3)
+        returning id
+        """,
+        item_id,
+        value,
+        note,
+    )
+    return int(row_id)
+
+
+async def feedback_examples(
+    chat_id: int, *, positive: int = 4, negative: int = 4
+) -> list[dict[str, Any]]:
+    """Последние оценки для few-shot в рубрике (TZ §4.7)."""
+    rows = await pool.fetch(
+        """
+        (select f.value, i.title, i.features
+           from feedback f join digest_items i on i.id = f.item_id
+          where i.chat_id = $1 and f.value > 0
+          order by f.created_at desc limit $2)
+        union all
+        (select f.value, i.title, i.features
+           from feedback f join digest_items i on i.id = f.item_id
+          where i.chat_id = $1 and f.value < 0
+          order by f.created_at desc limit $3)
+        """,
+        chat_id,
+        positive,
+        negative,
+    )
+    examples = []
+    for row in rows:
+        features = row["features"] or {}
+        examples.append(
+            {
+                "value": row["value"],
+                "title": row["title"],
+                "takeaway": features.get("takeaway", ""),
+            }
+        )
+    return examples
+
+
+async def feedback_dataset(chat_id: int | None = None) -> list[dict[str, Any]]:
+    """Все оценки с признаками — обучающая выборка для пересчёта весов."""
+    rows = await pool.fetch(
+        """
+        select f.value, i.features, i.score, i.chat_id
+          from feedback f join digest_items i on i.id = f.item_id
+         where ($1::bigint is null or i.chat_id = $1) and i.features is not null
+         order by f.created_at
+        """,
+        chat_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def count_feedback(chat_id: int | None = None) -> int:
+    value = await pool.fetchval(
+        """
+        select count(*) from feedback f join digest_items i on i.id = f.item_id
+         where ($1::bigint is null or i.chat_id = $1)
+        """,
+        chat_id,
+    )
+    return int(value or 0)
 
 
 async def log_llm_usage(

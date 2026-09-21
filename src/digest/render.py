@@ -87,6 +87,14 @@ class Topic:
     msg_count: int = 0
     reactions: int = 0
     score: float = 0.0
+    # заполняется скорингом (TZ §4.7)
+    kind: str = "other"
+    takeaway: str = ""
+    why: str = ""
+    features: dict[str, Any] = field(default_factory=dict)
+    embedding: list[float] | None = None
+    shown: bool = True
+    item_id: int | None = None
 
     @property
     def anchor_msg_id(self) -> int:
@@ -207,11 +215,70 @@ def _render(data: DigestData, *, bold: Any, link: Any, plain: Any) -> str:
     return "\n".join(lines).strip()
 
 
-def _topic_block(topic: Topic, chat_tg_id: int, *, bold: Any, link: Any, plain: Any) -> list[str]:
-    lines = [bold(topic.title)]
+KIND_MARKS = {
+    "decision": "🟢 [Решение]",
+    "insight": "💡 [Вывод]",
+    "resource": "🔗 [Ресурс]",
+    "announcement": "📣 [Анонс]",
+    "question": "❓ [Вопрос]",
+    "drama": "🔥 [Спор]",
+    "other": "•",
+}
 
-    if topic.decision:
-        lines.append(f"Вывод: {plain(topic.decision)}")
+
+def digest_parts(data: DigestData) -> list[tuple[str, Topic | None]]:
+    """Разбить дайджест на сообщения: шапка, каждая тема отдельно, хвост.
+
+    Тема уходит своим сообщением, потому что кнопки 👍 👎 🔕 привязываются к
+    конкретной теме (TZ §4.7), а в Telegram клавиатура принадлежит сообщению.
+    """
+    title = data.chat_title or str(data.chat_tg_id)
+    head = [f"<b>Дайджест «{esc_html(title)}» за {data.day:%d.%m.%Y}</b>"]
+
+    if not data.topics and not data.highlights:
+        head += ["", "За день ничего заметного не обсуждали.", ""]
+        head += _stats_block(data, esc_html)
+        return [("\n".join(head), None)]
+
+    if data.highlights:
+        head += ["", "📌 <b>Главное за день</b>"]
+        head += [f"• {esc_html(h)}" for h in data.highlights[:3]]
+
+    parts: list[tuple[str, Topic | None]] = [("\n".join(head), None)]
+
+    for topic in data.topics:
+        block = _topic_block(
+            topic, data.chat_tg_id,
+            bold=lambda t: f"<b>{esc_html(t)}</b>", link=_html_link, plain=esc_html,
+        )
+        parts.append(("\n".join(block).strip(), topic))
+
+    tail: list[str] = []
+    if data.unanswered:
+        tail += ["❓ <b>Без ответа</b>"]
+        for question, msg_id in data.unanswered[:5]:
+            tail.append("• " + _html_link(question, deeplink(data.chat_tg_id, msg_id)))
+        tail.append("")
+    if data.links:
+        tail += ["🔗 <b>Ссылки дня</b>"]
+        tail += [f"• {esc_html(url)}" for url in data.links[:10]]
+        tail.append("")
+    tail += _stats_block(data, esc_html)
+    parts.append(("\n".join(tail).strip(), None))
+    return parts
+
+
+def _topic_block(topic: Topic, chat_tg_id: int, *, bold: Any, link: Any, plain: Any) -> list[str]:
+    """Формат темы по §4.7: вывод и «почему важно», а не пересказ."""
+    mark = KIND_MARKS.get(topic.kind, "•")
+    lines = [f"{mark} {bold(topic.title)}"]
+
+    # takeaway из рубрики точнее «решения» из map-стадии: он написан как вывод
+    verdict = topic.takeaway or topic.decision
+    if verdict:
+        lines.append(f"Вывод: {plain(verdict)}")
+    if topic.why:
+        lines.append(f"Почему важно: {plain(topic.why)}")
     if topic.debate:
         lines.append(f"Спорили: {plain(topic.debate)}")
     if topic.mentions:
