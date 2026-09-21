@@ -24,7 +24,7 @@ login:
 	$(PY) -m src.collector.login
 
 backfill:
-	$(PY) -m src.collector.backfill --days $(DAYS)
+	$(PY) -m src.collector.backfill --days $(or $(DAYS),30)
 
 digest:
 	$(PY) -m src.digest.pipeline --date $(DATE)
