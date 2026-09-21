@@ -20,7 +20,7 @@ def test_defaults_without_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, s
     cfg = settings_cls(_env_file=tmp_path / "absent.env")
 
     assert cfg.TZ == "Asia/Kamchatka"
-    assert cfg.LLM_MODEL == "glm-5.3-flash"
+    assert cfg.LLM_MODEL == "deepseek-flash"
     assert cfg.EMBED_BACKEND == "local"
     assert cfg.EMBED_DIM == 1024
     assert cfg.APP_ROLE == "bot"
@@ -53,15 +53,53 @@ def test_empty_numeric_env_is_not_an_error(
     assert cfg.TG_GROUP_ID == 0
 
 
-def test_llm_extra_body(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls):
-    """reasoning_effort уезжает в extra_body, иначе GLM жжёт десятки тысяч токенов (TZ §1)."""
+def test_llm_extra_body_disables_thinking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
+):
+    """Замерено на deepseek-flash: с размышлениями 382 токена на ответ, без них 39."""
+    monkeypatch.setenv("LLM_THINKING", "disabled")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "")
+    assert settings_cls(_env_file=tmp_path / "absent.env").llm_extra_body == {
+        "thinking": {"type": "disabled"}
+    }
+
+
+def test_llm_extra_body_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
+):
+    """Для провайдеров, где thinking не отключается (GLM), остаётся reasoning_effort."""
+    monkeypatch.setenv("LLM_THINKING", "auto")
     monkeypatch.setenv("LLM_REASONING_EFFORT", "low")
     assert settings_cls(_env_file=tmp_path / "absent.env").llm_extra_body == {
         "reasoning_effort": "low"
     }
 
+
+def test_llm_extra_body_can_be_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
+):
+    monkeypatch.setenv("LLM_THINKING", "auto")
     monkeypatch.setenv("LLM_REASONING_EFFORT", "")
     assert settings_cls(_env_file=tmp_path / "absent.env").llm_extra_body == {}
+
+
+def test_embed_credentials_fall_back_to_llm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
+):
+    """У DeepSeek эмбеддингов нет, но по умолчанию пусть берутся те же реквизиты."""
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("LLM_API_KEY", "ключ")
+    monkeypatch.delenv("EMBED_BASE_URL", raising=False)
+    monkeypatch.delenv("EMBED_API_KEY", raising=False)
+    cfg = settings_cls(_env_file=tmp_path / "absent.env")
+
+    assert cfg.embed_base_url == "https://api.deepseek.com"
+    assert cfg.embed_api_key == "ключ"
+
+    monkeypatch.setenv("EMBED_BASE_URL", "https://embeddings.example.com")
+    assert settings_cls(_env_file=tmp_path / "absent.env").embed_base_url == (
+        "https://embeddings.example.com"
+    )
 
 
 def test_env_example_covers_all_settings(settings_cls):

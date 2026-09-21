@@ -31,6 +31,11 @@ async def get_chat_by_tg_id(chat_tg_id: int) -> Chat | None:
     return Chat.from_row(row) if row else None
 
 
+async def get_chat_by_id(chat_id: int) -> Chat | None:
+    row = await pool.fetchrow("select * from chats where id = $1", chat_id)
+    return Chat.from_row(row) if row else None
+
+
 async def get_or_create_chat(chat_tg_id: int, title: str | None = None) -> Chat:
     """Новые чаты появляются выключенными — включает владелец в админке (TZ §4.8)."""
     row = await pool.fetchrow(
@@ -414,6 +419,186 @@ async def search_messages(
         limit,
     )
     return [Message.from_row(r) for r in rows]
+
+
+# ------------------------------------------------------------------- чанки RAG
+
+async def replace_chunks(chat_id: int, thread_id: int, rows: list[dict[str, Any]]) -> int:
+    """Переиндексация треда: старые чанки заменяются новыми.
+
+    Тред живёт и дополняется, поэтому индексация должна быть повторяемой —
+    иначе в поиске копились бы дубли одного и того же обсуждения.
+    """
+    db = await pool.get_pool()
+    async with db.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "delete from chunks where chat_id = $1 and thread_id = $2", chat_id, thread_id
+        )
+        for row in rows:
+            await conn.execute(
+                """
+                insert into chunks (chat_id, thread_id, msg_ids, text, embedding,
+                                    date_from, date_to)
+                values ($1, $2, $3, $4, $5::vector, $6, $7)
+                """,
+                chat_id,
+                thread_id,
+                row["msg_ids"],
+                row["text"],
+                row["embedding"],
+                row.get("date_from"),
+                row.get("date_to"),
+            )
+    return len(rows)
+
+
+async def search_chunks_by_vector(
+    embedding: str, *, chat_id: int | None = None, limit: int = 30
+) -> list[dict[str, Any]]:
+    """Косинусная близость по pgvector (TZ §4.4)."""
+    rows = await pool.fetch(
+        """
+        select id, chat_id, thread_id, msg_ids, text, date_from, date_to,
+               1 - (embedding <=> $1::vector) as score
+          from chunks
+         where ($2::bigint is null or chat_id = $2) and embedding is not null
+         order by embedding <=> $1::vector
+         limit $3
+        """,
+        embedding,
+        chat_id,
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def search_chunks_by_text(
+    query: str, *, chat_id: int | None = None, limit: int = 30
+) -> list[dict[str, Any]]:
+    """Полнотекстовый поиск по чанкам — вторая половина гибрида.
+
+    Слова вопроса соединяются через ИЛИ, а не через И. `websearch_to_tsquery`
+    требует все слова сразу, и вопрос «сколько стоит генерация ролика» не находил
+    обсуждение, где сказано «12 рублей за ролик»: слова «стоит» там нет.
+    Ранжирование делает `ts_rank` — чем больше слов совпало, тем выше.
+    """
+    rows = await pool.fetch(
+        """
+        with q as (
+            select to_tsquery(
+                'russian',
+                array_to_string(
+                    tsvector_to_array(to_tsvector('russian', $1)), ' | '
+                )
+            ) as query
+        )
+        select c.id, c.chat_id, c.thread_id, c.msg_ids, c.text, c.date_from, c.date_to,
+               ts_rank(to_tsvector('russian', c.text), q.query) as score
+          from chunks c, q
+         where ($2::bigint is null or c.chat_id = $2)
+           and q.query is not null
+           and to_tsvector('russian', c.text) @@ q.query
+         order by score desc
+         limit $3
+        """,
+        query,
+        chat_id,
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_thread_messages(
+    chat_id: int, thread_id: int, *, limit: int = 40
+) -> list[Message]:
+    """Весь тред целиком — для расширения контекста (TZ §4.4)."""
+    rows = await pool.fetch(
+        """
+        select * from messages
+         where chat_id = $1 and thread_id = $2 and deleted_at is null
+         order by date, tg_msg_id
+         limit $3
+        """,
+        chat_id,
+        thread_id,
+        limit,
+    )
+    return [Message.from_row(r) for r in rows]
+
+
+async def get_messages_around(
+    chat_id: int, tg_msg_id: int, *, radius: int = 3
+) -> list[Message]:
+    """Соседние сообщения по времени — если тред ещё не размечен."""
+    rows = await pool.fetch(
+        """
+        (select * from messages
+          where chat_id = $1 and tg_msg_id <= $2 and deleted_at is null
+          order by tg_msg_id desc limit $3)
+        union
+        (select * from messages
+          where chat_id = $1 and tg_msg_id > $2 and deleted_at is null
+          order by tg_msg_id limit $4)
+        """,
+        chat_id,
+        tg_msg_id,
+        radius + 1,   # само сообщение плюс radius до него
+        radius,       # и radius после
+    )
+    return sorted(
+        [Message.from_row(r) for r in rows], key=lambda m: (m.date, m.tg_msg_id)
+    )
+
+
+async def get_days_with_unassigned_messages(
+    chat_id: int, *, tz: str | None = None, limit: int = 60
+) -> list[date_type]:
+    """Дни, где есть сообщения без thread_id.
+
+    Скользящее окно «последние N дней» пропустило бы всю бэкфилленную историю,
+    поэтому идём от данных: какие дни ещё не разложены по тредам.
+    """
+    rows = await pool.fetch(
+        """
+        select distinct (date at time zone $2)::date as day
+          from messages
+         where chat_id = $1 and thread_id is null and deleted_at is null
+         order by day desc
+         limit $3
+        """,
+        chat_id,
+        tz or cfg.TZ,
+        limit,
+    )
+    return [r["day"] for r in rows]
+
+
+async def get_unindexed_threads(chat_id: int, limit: int = 200) -> list[int]:
+    """Треды, которых ещё нет в индексе или которые успели дополниться."""
+    rows = await pool.fetch(
+        """
+        select m.thread_id
+          from messages m
+          left join chunks c
+                 on c.chat_id = m.chat_id and c.thread_id = m.thread_id
+         where m.chat_id = $1 and m.thread_id is not null and m.deleted_at is null
+         group by m.thread_id
+        having count(c.id) = 0 or max(m.date) > max(coalesce(c.date_to, 'epoch'::timestamptz))
+         limit $2
+        """,
+        chat_id,
+        limit,
+    )
+    return [int(r["thread_id"]) for r in rows]
+
+
+async def log_qa(question: str, answer: str, sources: list[int]) -> None:
+    await pool.execute(
+        "insert into qa_log (question, answer, sources) values ($1, $2, $3)",
+        question,
+        answer,
+        sources,
+    )
 
 
 # ------------------------------------------------------------------ статистика

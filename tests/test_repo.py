@@ -358,3 +358,132 @@ async def test_pending_transcriptions():
 
     pending = await repo.get_pending_transcriptions(chat_id)
     assert [m.tg_msg_id for m in pending] == [1]
+
+
+# ------------------------------------------------------------- чанки и RAG
+
+def _vec(seed: float) -> str:
+    """Вектор нужной размерности: один «горячий» компонент задаёт направление."""
+    values = [0.0] * 1024
+    values[int(seed) % 1024] = 1.0
+    return "[" + ",".join(f"{v:.3f}" for v in values) + "]"
+
+
+async def test_replace_chunks_does_not_duplicate():
+    """Тред дополняется, переиндексация не должна плодить копии в поиске."""
+    chat_id = await _chat()
+    rows = [{"msg_ids": [1, 2], "text": "первая версия", "embedding": _vec(1)}]
+    await repo.replace_chunks(chat_id, 100, rows)
+    await repo.replace_chunks(
+        chat_id, 100, [{"msg_ids": [1, 2, 3], "text": "вторая версия", "embedding": _vec(1)}]
+    )
+
+    from src.db import pool
+
+    total = await pool.fetchval("select count(*) from chunks where thread_id = 100")
+    text = await pool.fetchval("select text from chunks where thread_id = 100")
+    assert total == 1 and text == "вторая версия"
+
+
+async def test_chunk_text_search_matches_partial_question():
+    """Вопрос «сколько стоит генерация ролика» должен находить «12 рублей за ролик»."""
+    chat_id = await _chat()
+    await repo.replace_chunks(chat_id, 1, [{
+        "msg_ids": [1], "text": "Петя: примерно 12 рублей за ролик на тарифе про",
+        "embedding": _vec(1),
+    }])
+    await repo.replace_chunks(chat_id, 2, [{
+        "msg_ids": [2], "text": "Маша: конференция будет 14 ноября в Москве",
+        "embedding": _vec(2),
+    }])
+
+    found = await repo.search_chunks_by_text("сколько стоит генерация ролика")
+
+    assert found, "поиск по всем словам сразу ничего бы не нашёл"
+    assert found[0]["thread_id"] == 1
+
+
+async def test_chunk_text_search_ranks_by_overlap():
+    chat_id = await _chat()
+    await repo.replace_chunks(chat_id, 1, [{
+        "msg_ids": [1], "text": "конференция по нейросетям в ноябре, билет 30 тысяч",
+        "embedding": _vec(1),
+    }])
+    await repo.replace_chunks(chat_id, 2, [{
+        "msg_ids": [2], "text": "купил билет на поезд", "embedding": _vec(2),
+    }])
+
+    found = await repo.search_chunks_by_text("когда конференция и сколько билет")
+    assert found[0]["thread_id"] == 1
+
+
+async def test_chunk_vector_search_orders_by_closeness():
+    chat_id = await _chat()
+    for thread_id, seed in ((1, 5), (2, 500), (3, 900)):
+        await repo.replace_chunks(chat_id, thread_id, [{
+            "msg_ids": [thread_id], "text": f"тред {thread_id}", "embedding": _vec(seed),
+        }])
+
+    found = await repo.search_chunks_by_vector(_vec(500), limit=3)
+
+    assert found[0]["thread_id"] == 2, "ближайший вектор должен быть первым"
+    assert found[0]["score"] > found[1]["score"]
+
+
+async def test_days_with_unassigned_messages():
+    """Разметка идёт от данных: после бэкфилла старые дни тоже должны попасть."""
+    chat_id = await _chat()
+    kam = ZoneInfo(KAMCHATKA)
+    await repo.upsert_message(_msg(chat_id, 1, date=datetime(2026, 8, 1, 12, tzinfo=kam)))
+    await repo.upsert_message(_msg(chat_id, 2, date=datetime(2026, 9, 20, 12, tzinfo=kam)))
+
+    days = await repo.get_days_with_unassigned_messages(chat_id, tz=KAMCHATKA)
+    assert [str(d) for d in days] == ["2026-09-20", "2026-08-01"]
+
+    await repo.set_thread_id(chat_id, [1, 2], 1)
+    assert await repo.get_days_with_unassigned_messages(chat_id, tz=KAMCHATKA) == []
+
+
+async def test_unindexed_threads_include_the_ones_that_grew():
+    chat_id = await _chat()
+    kam = ZoneInfo(KAMCHATKA)
+    await repo.upsert_message(_msg(chat_id, 1, date=datetime(2026, 9, 20, 12, tzinfo=kam)))
+    await repo.set_thread_id(chat_id, [1], 1)
+
+    assert await repo.get_unindexed_threads(chat_id) == [1]
+
+    await repo.replace_chunks(chat_id, 1, [{
+        "msg_ids": [1], "text": "тред", "embedding": _vec(1),
+        "date_from": datetime(2026, 9, 20, 12, tzinfo=kam),
+        "date_to": datetime(2026, 9, 20, 12, tzinfo=kam),
+    }])
+    assert await repo.get_unindexed_threads(chat_id) == [], "уже проиндексирован"
+
+    # в тред дописали новое сообщение — он снова требует индексации
+    await repo.upsert_message(_msg(chat_id, 2, date=datetime(2026, 9, 20, 13, tzinfo=kam)))
+    await repo.set_thread_id(chat_id, [2], 1)
+    assert await repo.get_unindexed_threads(chat_id) == [1]
+
+
+async def test_thread_messages_and_neighbours():
+    chat_id = await _chat()
+    kam = ZoneInfo(KAMCHATKA)
+    for n in range(1, 8):
+        await repo.upsert_message(
+            _msg(chat_id, n, date=datetime(2026, 9, 20, 12, n, tzinfo=kam))
+        )
+    await repo.set_thread_id(chat_id, [2, 3, 4], 2)
+
+    thread = await repo.get_thread_messages(chat_id, 2)
+    assert [m.tg_msg_id for m in thread] == [2, 3, 4]
+
+    around = await repo.get_messages_around(chat_id, 4, radius=2)
+    assert [m.tg_msg_id for m in around] == [2, 3, 4, 5, 6]
+
+
+async def test_qa_log():
+    await repo.log_qa("вопрос", "ответ", [1, 2])
+    from src.db import pool
+
+    row = await pool.fetchrow("select * from qa_log")
+    assert row["question"] == "вопрос" and row["sources"] == [1, 2]

@@ -39,10 +39,18 @@ class Settings(BaseSettings):
     TELEGRAPH_SHORT_NAME: str = "TeleTemaBot"
 
     # --- LLM (OpenAI-совместимый провайдер) ---
-    LLM_BASE_URL: str = "https://api.z.ai/api/paas/v4"
+    LLM_BASE_URL: str = "https://api.deepseek.com"
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "glm-5.3-flash"
-    LLM_REASONING_EFFORT: str = "low"
+    LLM_MODEL: str = "deepseek-flash"
+    # deepseek-flash и GLM — reasoning-модели: без ограничения на разбор одного треда
+    # уходят сотни лишних токенов, а в JSON-режиме ответ может вернуться пустым,
+    # потому что весь лимит съеден размышлением. Замеры — в docs/SETUP.md.
+    LLM_THINKING: str = "disabled"     # disabled | auto
+    LLM_REASONING_EFFORT: str = ""     # для провайдеров, где thinking не отключается
+
+    # --- Эмбеддинги через API (у DeepSeek их нет, нужен отдельный провайдер) ---
+    EMBED_BASE_URL: str = ""           # пусто -> берётся LLM_BASE_URL
+    EMBED_API_KEY: str = ""            # пусто -> берётся LLM_API_KEY
 
     # --- Эмбеддинги ---
     EMBED_BACKEND: Literal["local", "api"] = "local"
@@ -87,10 +95,21 @@ class Settings(BaseSettings):
 
     @property
     def llm_extra_body(self) -> dict[str, Any]:
-        """Доп. поля запроса к LLM: reasoning отключить нельзя, но можно занизить."""
-        if not self.LLM_REASONING_EFFORT:
-            return {}
-        return {"reasoning_effort": self.LLM_REASONING_EFFORT}
+        """Доп. поля запроса к LLM. Провайдеры называют их по-разному."""
+        extra: dict[str, Any] = {}
+        if self.LLM_THINKING == "disabled":
+            extra["thinking"] = {"type": "disabled"}
+        if self.LLM_REASONING_EFFORT:
+            extra["reasoning_effort"] = self.LLM_REASONING_EFFORT
+        return extra
+
+    @property
+    def embed_base_url(self) -> str:
+        return self.EMBED_BASE_URL or self.LLM_BASE_URL
+
+    @property
+    def embed_api_key(self) -> str:
+        return self.EMBED_API_KEY or self.LLM_API_KEY
 
     @property
     def media_dir(self) -> Path:

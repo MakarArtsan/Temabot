@@ -18,6 +18,7 @@ from src.config import cfg
 from src.db import repo
 from src.digest import pipeline as digest_pipeline
 from src.digest.render import split_message
+from src.rag.index import index_all
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +82,14 @@ def build_scheduler(bot: Any, *, digest_time: time | None = None) -> AsyncIOSche
         replace_existing=True,
         misfire_grace_time=3600,  # процесс мог перезапускаться — дайджест всё равно уйдёт
         coalesce=True,            # два пропущенных запуска не дадут два дайджеста
+    )
+    scheduler.add_job(
+        index_all,
+        CronTrigger(minute=17, timezone=zone),   # раз в час, не в ноль минут
+        id="rag_index",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,        # индексация может идти дольше часа на большой истории
     )
     scheduler.add_job(
         heartbeat,

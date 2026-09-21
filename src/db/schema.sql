@@ -99,8 +99,12 @@ create table if not exists chunks (
   date_from   timestamptz,
   date_to     timestamptz
 );
+-- В ТЗ был ivfflat с lists = 100, но такой индекс требует обучения на данных:
+-- пока чанков меньше числа списков, поиск возвращает пустоту — то есть ровно в
+-- первые дни работы, когда индекс только наполняется. HNSW работает с первой
+-- строки и не нуждается в перестроении по мере роста базы.
 create index if not exists chunks_embedding_idx on chunks
-  using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+  using hnsw (embedding vector_cosine_ops);
 create index if not exists chunks_chat_thread_idx on chunks (chat_id, thread_id);
 
 -- -------------------------------------------------------------------- дайджест

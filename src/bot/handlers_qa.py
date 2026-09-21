@@ -9,7 +9,7 @@ from datetime import date as date_type
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from aiogram import Router, types
+from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 
 from src.config import cfg
@@ -19,6 +19,7 @@ from src.digest import pipeline as digest_pipeline
 from src.digest import prompts
 from src.digest.render import DigestData, deeplink, esc_html, render_html, split_message
 from src.llm.client import chat_json
+from src.rag.answer import answer_question
 
 log = logging.getLogger(__name__)
 router = Router(name="qa")
@@ -26,6 +27,8 @@ router = Router(name="qa")
 HELP = """\
 <b>Что я умею</b>
 
+/ask вопрос — ответ по истории чата со ссылками на источники
+(можно просто написать вопрос без команды)
 /digest — дайджест за сегодня
 /digest 2026-09-15 — за конкретный день
 /week — сводка за 7 дней
@@ -76,6 +79,29 @@ async def on_start(message: types.Message) -> None:
 @router.message(Command("help"))
 async def on_help(message: types.Message) -> None:
     await message.answer(HELP, parse_mode="HTML")
+
+
+@router.message(Command("ask"))
+async def on_ask(message: types.Message, command: CommandObject) -> None:
+    """Ответ по истории чата (TZ §4.4)."""
+    question = (command.args or "").strip()
+    if not question:
+        await message.answer("Напиши так: /ask что решили про Seedance")
+        return
+    await _answer(message, question)
+
+
+async def _answer(message: types.Message, question: str) -> None:
+    if message.bot is not None:
+        # ответ собирается несколько секунд, «печатает…» показывает, что бот жив
+        await message.bot.send_chat_action(message.chat.id, "typing")
+    try:
+        answer = await answer_question(question)
+    except Exception as exc:
+        log.exception("Ответ на вопрос не собрался")
+        await message.answer(f"Не получилось: {esc_html(str(exc))}", parse_mode="HTML")
+        return
+    await send_long(message, answer.as_html())
 
 
 @router.message(Command("digest"))
@@ -289,3 +315,13 @@ async def on_stats(message: types.Message) -> None:
 
 def _today() -> date_type:
     return datetime.now(ZoneInfo(cfg.TZ)).date()
+
+
+@router.message(F.chat.type == "private", F.text & ~F.text.startswith("/"))
+async def on_plain_text(message: types.Message) -> None:
+    """Просто текст в личке — то же, что /ask (TZ §4.5, §4.6).
+
+    Фильтр по типу чата обязателен: без него бот отвечал бы на каждое сообщение
+    в группе, где он состоит как копировщик.
+    """
+    await _answer(message, (message.text or "").strip())
