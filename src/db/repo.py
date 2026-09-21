@@ -437,6 +437,139 @@ async def count_messages(chat_id: int | None = None) -> int:
     return int(value or 0)
 
 
+# ------------------------------------------------------------- данные для админки
+
+async def messages_per_day(
+    chat_id: int | None = None, *, days: int = 30, tz: str | None = None
+) -> list[dict[str, Any]]:
+    """Сообщений по дням — график на дашборде (TZ §4.9)."""
+    rows = await pool.fetch(
+        """
+        select (date at time zone $3)::date as day, count(*) as count
+          from messages
+         where ($1::bigint is null or chat_id = $1)
+           and deleted_at is null
+           and date > now() - make_interval(days => $2)
+         group by 1 order by 1
+        """,
+        chat_id,
+        days,
+        tz or cfg.TZ,
+    )
+    return [{"day": r["day"], "count": int(r["count"])} for r in rows]
+
+
+async def tokens_per_day(days: int = 30, tz: str | None = None) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        select (created_at at time zone $2)::date as day,
+               coalesce(sum(tokens_in), 0)  as tokens_in,
+               coalesce(sum(tokens_out), 0) as tokens_out,
+               count(*) as calls
+          from llm_usage
+         where created_at > now() - make_interval(days => $1)
+         group by 1 order by 1
+        """,
+        days,
+        tz or cfg.TZ,
+    )
+    return [dict(r) for r in rows]
+
+
+async def pending_media_count(chat_id: int | None = None) -> int:
+    """Очередь расшифровки — сколько голосовых ждут (TZ §4.9)."""
+    value = await pool.fetchval(
+        """
+        select count(*) from messages
+         where ($1::bigint is null or chat_id = $1)
+           and media_type in ('voice', 'audio')
+           and (transcript is null or transcript = '')
+           and deleted_at is null
+        """,
+        chat_id,
+    )
+    return int(value or 0)
+
+
+async def list_recent_digests(limit: int = 30) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        select d.id, d.chat_id, d.day, d.msg_count, d.tokens_used, d.created_at,
+               c.title, c.tg_id,
+               (select count(*) from digest_items i where i.digest_id = d.id and i.shown) as shown,
+               (select count(*) from digest_items i where i.digest_id = d.id and not i.shown)
+                   as missed
+          from digests d left join chats c on c.id = d.chat_id
+         order by d.day desc limit $1
+        """,
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def list_authors(chat_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        select a.tg_user_id, a.name, a.weight, a.muted, a.hide_from_ratings,
+               count(m.id) as messages,
+               max(m.date) as last_at,
+               (b.tg_user_id is not null) as blocked
+          from authors a
+          left join messages m on m.tg_user_id = a.tg_user_id
+               and ($1::bigint is null or m.chat_id = $1)
+          left join copier_blocklist b on b.tg_user_id = a.tg_user_id
+         group by a.tg_user_id, a.name, a.weight, a.muted, a.hide_from_ratings, b.tg_user_id
+         order by count(m.id) desc
+         limit $2
+        """,
+        chat_id,
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def set_author_flags(
+    tg_user_id: int,
+    *,
+    weight: float | None = None,
+    muted: bool | None = None,
+    hide_from_ratings: bool | None = None,
+) -> Author | None:
+    row = await pool.fetchrow(
+        """
+        update authors
+           set weight = coalesce($2, weight),
+               muted  = coalesce($3, muted),
+               hide_from_ratings = coalesce($4, hide_from_ratings),
+               updated_at = now()
+         where tg_user_id = $1
+        returning *
+        """,
+        tg_user_id,
+        weight,
+        muted,
+        hide_from_ratings,
+    )
+    return Author.from_row(row) if row else None
+
+
+async def list_qa_log(limit: int = 50) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        "select id, question, answer, sources, created_at from qa_log "
+        "order by created_at desc limit $1",
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_states(prefix: str = "") -> dict[str, Any]:
+    """Heartbeat-и процессов для страницы «Система» (TZ §4.9)."""
+    rows = await pool.fetch(
+        "select key, value from state where key like $1 || '%'", prefix
+    )
+    return {r["key"]: r["value"] for r in rows}
+
+
 # ------------------------------------------------------------------------ state
 
 async def get_state(key: str, default: Any = None) -> Any:

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Дайджесты{% endblock %}
+{% block h1 %}Архив дайджестов{% endblock %}
+{% block content %}
+<div class="card">
+  {% if digests %}
+    <table>
+      <tr><th>День</th><th>Группа</th><th>Сообщений</th><th>Тем</th><th>Токенов</th><th></th></tr>
+      {% for d in digests %}
+        <tr>
+          <td>{{ d.day }}</td>
+          <td>{{ d.title or d.tg_id }}</td>
+          <td>{{ d.msg_count or 0 }}</td>
+          <td>{{ d.shown }} <span class="muted">+{{ d.missed }} отсеяно</span></td>
+          <td>{{ d.tokens_used or 0 }}</td>
+          <td><a class="btn" href="/digests/{{ d.id }}">разобрать</a></td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">Дайджестов пока нет.</p>
+  {% endif %}
+</div>
+{% endblock %}

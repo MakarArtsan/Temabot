@@ -19,7 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 media = ["faster-whisper>=1.0"]
 embed = ["sentence-transformers>=3.0"]
-web = ["fastapi>=0.111", "uvicorn>=0.30", "jinja2>=3.1", "itsdangerous>=2.2"]
+web = ["fastapi>=0.111", "uvicorn>=0.30", "jinja2>=3.1", "itsdangerous>=2.2",
+       "python-multipart>=0.0.9"]
 ml = ["scikit-learn>=1.5", "numpy>=1.26"]
 dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "ruff>=0.5", "mypy>=1.10"]
 
@@ -38,6 +39,10 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003"]  # кириллица в строках и комментариях — это норма
+
+[tool.ruff.lint.flake8-bugbear]
+# Depends и Form в значениях по умолчанию — идиома FastAPI, а не ошибка.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Form", "fastapi.Query", "fastapi.Path"]
 
 [tool.ruff.lint.per-file-ignores]
 # В тестах блокирующая работа с файлами безвредна: там нет живого цикла событий,

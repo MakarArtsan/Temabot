@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Дашборд{% endblock %}
+{% block h1 %}Дашборд{% endblock %}
+{% block head %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>{% endblock %}
+{% block content %}
+<div class="row">
+  <div class="card">
+    <div class="muted">Сообщений собрано</div>
+    <div class="big">{{ stats.messages }}</div>
+    <div class="muted">участников: {{ stats.authors }}</div>
+  </div>
+  <div class="card">
+    <div class="muted">Голосовых</div>
+    <div class="big">{{ stats.voices }}</div>
+    <div class="muted">расшифровано: {{ stats.transcribed }}</div>
+  </div>
+  <div class="card">
+    <div class="muted">Очередь расшифровки</div>
+    <div class="big">{{ pending_media }}</div>
+    <div class="muted">ждут обработки</div>
+  </div>
+  <div class="card">
+    <div class="muted">Токены за месяц</div>
+    <div class="big">${{ '%.2f'|format(month_cost) }}</div>
+    <div class="muted">сегодня: {{ tokens_today.tokens_in }} → {{ tokens_today.tokens_out }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Сообщений по дням</h2>
+  <canvas id="perDay" height="90"></canvas>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2 style="margin-top:0">Последние дайджесты</h2>
+    {% if digests %}
+      <table>
+        <tr><th>День</th><th>Группа</th><th>Тем</th><th>Токенов</th></tr>
+        {% for d in digests %}
+          <tr>
+            <td><a href="/digests/{{ d.id }}">{{ d.day }}</a></td>
+            <td>{{ d.title or d.tg_id }}</td>
+            <td>{{ d.shown }} <span class="muted">+{{ d.missed }} отсеяно</span></td>
+            <td>{{ d.tokens_used or 0 }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}<p class="muted">Дайджестов пока нет.</p>{% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Процессы</h2>
+    {% if states %}
+      <table>
+        {% for key, value in states.items() %}
+          <tr><td><code>{{ key }}</code></td><td class="muted">{{ value }}</td></tr>
+        {% endfor %}
+      </table>
+    {% else %}<p class="muted">Отметок пока нет — процессы ещё не запускались.</p>{% endif %}
+    <p class="muted">Последнее сообщение: {{ stats.last_at or '—' }}</p>
+  </div>
+</div>
+
+<script>
+  const days = {{ per_day | map(attribute='day') | map('string') | list | tojson }};
+  const counts = {{ per_day | map(attribute='count') | list | tojson }};
+  const ink = getComputedStyle(document.documentElement).getPropertyValue('--muted');
+  new Chart(document.getElementById('perDay'), {
+    type: 'bar',
+    data: { labels: days, datasets: [{ data: counts, backgroundColor: '#2563eb' }] },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: ink }, grid: { display: false } },
+        y: { ticks: { color: ink }, beginAtZero: true }
+      }
+    }
+  });
+</script>
+{% endblock %}

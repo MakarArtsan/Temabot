@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Участники{% endblock %}
+{% block h1 %}Участники{% endblock %}
+{% block content %}
+<div class="card">
+  {% if authors %}
+    <table>
+      <tr><th>Кто</th><th>Сообщений</th><th>Вес мнения</th><th>Дайджест</th>
+          <th>Копировщик</th><th>Рейтинги</th></tr>
+      {% for author in authors %}{% include "_author_row.html" %}{% endfor %}
+    </table>
+  {% else %}<p class="muted">Участников пока нет.</p>{% endif %}
+</div>
+<p class="muted">Вес мнения поднимает темы, где участвовал этот человек.
+  Заглушённые штрафуются в отборе, заблокированным не отвечает копировщик.</p>
+{% endblock %}

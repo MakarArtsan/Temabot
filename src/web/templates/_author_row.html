@@ -1,0 +1,41 @@
+<tr id="author-{{ author.tg_user_id }}">
+  <td>
+    {{ author.name or author.tg_user_id }}<br>
+    <code class="muted">{{ author.tg_user_id }}</code>
+  </td>
+  <td>{{ author.messages }}</td>
+  <td>
+    <form hx-post="/authors/{{ author.tg_user_id }}" hx-target="#author-{{ author.tg_user_id }}"
+          hx-swap="outerHTML" style="display:flex;gap:4px">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="field" value="weight">
+      <input type="number" step="0.1" min="0" max="5" name="value"
+             value="{{ '%.1f'|format(author.weight) }}" style="width:70px">
+      <button class="ghost" type="submit">ок</button>
+    </form>
+  </td>
+  <td>
+    <button class="{{ 'bad' if author.muted else 'ghost' }}"
+            hx-post="/authors/{{ author.tg_user_id }}" hx-target="#author-{{ author.tg_user_id }}"
+            hx-swap="outerHTML"
+            hx-vals='{"field":"muted","value":"{{ 0 if author.muted else 1 }}","csrf_token":"{{ csrf }}"}'>
+      {{ 'заглушён' if author.muted else 'обычный' }}
+    </button>
+  </td>
+  <td>
+    <button class="{{ 'bad' if author.blocked else 'ghost' }}"
+            hx-post="/authors/{{ author.tg_user_id }}" hx-target="#author-{{ author.tg_user_id }}"
+            hx-swap="outerHTML"
+            hx-vals='{"field":"blocked","value":"{{ 0 if author.blocked else 1 }}","csrf_token":"{{ csrf }}"}'>
+      {{ 'в блоке' if author.blocked else 'копировщик доступен' }}
+    </button>
+  </td>
+  <td>
+    <button class="{{ 'ghost' if not author.hide_from_ratings else '' }}"
+            hx-post="/authors/{{ author.tg_user_id }}" hx-target="#author-{{ author.tg_user_id }}"
+            hx-swap="outerHTML"
+            hx-vals='{"field":"hide_from_ratings","value":"{{ 0 if author.hide_from_ratings else 1 }}","csrf_token":"{{ csrf }}"}'>
+      {{ 'скрыт' if author.hide_from_ratings else 'в рейтингах' }}
+    </button>
+  </td>
+</tr>

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Система{% endblock %}
+{% block h1 %}Система{% endblock %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0">Отметки процессов</h2>
+  <p class="muted">Сейчас по часам бота: {{ now.strftime('%d.%m.%Y %H:%M') }}</p>
+  {% if states %}
+    <table>
+      {% for key, value in states.items() %}
+        <tr><td><code>{{ key }}</code></td><td class="muted">{{ value }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">Отметок нет — процессы ещё не запускались.</p>
+  {% endif %}
+  <p class="muted">В очереди расшифровки: {{ pending_media }}</p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Ручной запуск</h2>
+  <form method="post" action="/system/digest" style="margin-bottom:12px">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label>Собрать дайджест</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <select name="chat_id" style="max-width:260px">
+        {% for chat in chats %}
+          <option value="{{ chat.id }}">{{ chat.title or chat.tg_id }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="day" placeholder="2026-09-20" style="max-width:160px">
+      <button type="submit">Собрать</button>
+    </div>
+    <p class="muted">Пересобирает и сохраняет, но никому не отправляет.</p>
+  </form>
+
+  <form method="post" action="/system/reindex">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button class="ghost" type="submit">Переиндексировать для поиска</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Экспорт</h2>
+  {% for chat in chats %}
+    <p><a href="/system/export/{{ chat.id }}">{{ chat.title or chat.tg_id }} — сегодня в JSON</a></p>
+  {% endfor %}
+</div>
+{% endblock %}

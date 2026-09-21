@@ -1,0 +1,33 @@
+<tr id="chat-{{ chat.tg_id }}">
+  <td>
+    <strong>{{ chat.title or chat.tg_id }}</strong><br>
+    <code class="muted">{{ chat.tg_id }}</code>
+  </td>
+  <td>
+    <button class="{{ '' if chat.collect else 'ghost' }}"
+            hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+            hx-swap="outerHTML"
+            hx-vals='{"field":"collect","value":"{{ 0 if chat.collect else 1 }}","csrf_token":"{{ csrf }}"}'>
+      {{ 'сбор включён' if chat.collect else 'сбор выключен' }}
+    </button>
+  </td>
+  <td>
+    <button class="{{ '' if chat.digest else 'ghost' }}"
+            hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+            hx-swap="outerHTML"
+            hx-vals='{"field":"digest","value":"{{ 0 if chat.digest else 1 }}","csrf_token":"{{ csrf }}"}'>
+      {{ 'дайджест включён' if chat.digest else 'дайджест выключен' }}
+    </button>
+  </td>
+  <td>
+    {% for mode, label in [('allow','разрешён'), ('ask','спросить'), ('deny','запрещён')] %}
+      <button class="{{ '' if chat.copier == mode else 'ghost' }}"
+              hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+              hx-swap="outerHTML"
+              hx-vals='{"field":"copier","value":"{{ mode }}","csrf_token":"{{ csrf }}"}'>
+        {{ label }}
+      </button>
+    {% endfor %}
+  </td>
+  <td class="muted">{{ chat.digest_time }} · {{ chat.retention_days }} дн.</td>
+</tr>

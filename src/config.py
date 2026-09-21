@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     OWNER_ID: int = 0
     TELEGRAPH_TOKEN: str = ""
     TELEGRAPH_SHORT_NAME: str = "TeleTemaBot"
+    BOT_USERNAME: str = ""            # без «собаки»; нужен виджету входа в админку
 
     # --- LLM (OpenAI-совместимый провайдер) ---
     LLM_BASE_URL: str = "https://api.deepseek.com"

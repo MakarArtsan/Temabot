@@ -1,0 +1,34 @@
+{% if error %}
+  <p style="color:var(--bad)">Не получилось: {{ error }}</p>
+{% else %}
+  <h2>Что получилось за {{ day }}</h2>
+  <table>
+    <tr><th>Тема</th><th>Вовл</th><th>Польз</th><th>Новизна</th><th>Скор</th><th>Итог</th></tr>
+    {% for t in topics %}
+      <tr>
+        <td>{{ t.title }}<br><span class="muted">{{ t.takeaway }}</span></td>
+        <td>{{ '%.2f'|format(t.features.engagement) }}</td>
+        <td>{{ '%.2f'|format(t.features.usefulness) }}</td>
+        <td>{{ '%.2f'|format(t.features.novelty) }}</td>
+        <td><strong>{{ '%.3f'|format(t.score) }}</strong></td>
+        <td>{% if t.shown %}<span class="pill on">прошла</span>
+            {% else %}<span class="pill off">отсеяна</span>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="muted">За этот день тем не набралось.</td></tr>
+    {% endfor %}
+  </table>
+  <p class="muted">Токенов: {{ result.usage.tokens_in }} на вход,
+    {{ result.usage.tokens_out }} на выход</p>
+
+  <div class="grid2">
+    <div>
+      <h2>Новый дайджест</h2>
+      <pre style="white-space:pre-wrap;font-size:13px">{{ result.markdown }}</pre>
+    </div>
+    <div>
+      <h2>Сохранённый ранее</h2>
+      <pre style="white-space:pre-wrap;font-size:13px" class="muted">{{ old_markdown or 'за этот день дайджеста не было' }}</pre>
+    </div>
+  </div>
+{% endif %}

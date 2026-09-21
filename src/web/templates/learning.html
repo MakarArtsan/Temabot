@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Обучение{% endblock %}
+{% block h1 %}Обучение на оценках{% endblock %}
+{% block content %}
+{% for row in rows %}
+  <div class="card">
+    <h2 style="margin-top:0">{{ row.chat.title or row.chat.tg_id }}</h2>
+    <p class="muted">Оценок собрано: <strong>{{ row.count }}</strong>
+      {% if row.count < 30 %}(для пересчёта нужно хотя бы 30){% endif %}</p>
+
+    {% if row.proposal and row.proposal.weights %}
+      <table>
+        <tr><th>Вес</th><th>Сейчас</th><th>Предложено</th></tr>
+        {% for key, value in row.current.items() %}
+          <tr>
+            <td>{{ key }}</td>
+            <td>{{ '%.3f'|format(value) }}</td>
+            <td><strong>{{ '%.3f'|format(row.proposal.weights.get(key, 0)) }}</strong></td>
+          </tr>
+        {% endfor %}
+      </table>
+      <p class="muted">
+        Точность предложенных весов на оценках: {{ '%.2f'|format(row.proposal.accuracy or 0) }},
+        у текущих: {{ '%.2f'|format(row.proposal.baseline_accuracy or 0) }}.
+        Выборка: {{ row.proposal.samples }}.
+      </p>
+      <form method="post" action="/learning/{{ row.chat.id }}/apply" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button type="submit">Применить предложенные веса</button>
+      </form>
+    {% else %}
+      <p class="muted">Предложения нет.</p>
+    {% endif %}
+
+    <form method="post" action="/learning/{{ row.chat.id }}/retrain" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button class="ghost" type="submit">Пересчитать сейчас</button>
+    </form>
+  </div>
+{% else %}
+  <div class="card"><p class="muted">Групп пока нет.</p></div>
+{% endfor %}
+{% endblock %}

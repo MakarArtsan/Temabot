@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Q&amp;A{% endblock %}
+{% block h1 %}Вопросы и ответы{% endblock %}
+{% block content %}
+<div class="card">
+  {% for row in rows %}
+    <div class="topic">
+      <div class="muted">{{ row.created_at.strftime('%d.%m.%Y %H:%M') if row.created_at }}</div>
+      <strong>{{ row.question }}</strong>
+      <div style="margin-top:4px">{{ row.answer }}</div>
+      {% if row.sources %}
+        <div class="muted">источники: {{ row.sources|join(', ') }}</div>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="muted">Вопросов пока не задавали.</p>
+  {% endfor %}
+</div>
+{% endblock %}

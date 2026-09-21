@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Отбор{% endblock %}
+{% block h1 %}Отбор тем{% endblock %}
+{% block content %}
+{% if not chat %}
+  <div class="card"><p class="muted">Сначала должна появиться хотя бы одна группа.</p></div>
+{% else %}
+<div class="card">
+  <form method="get" action="/selection">
+    <label>Группа</label>
+    <select name="chat" onchange="this.form.submit()">
+      {% for c in chats %}
+        <option value="{{ c.id }}" {{ 'selected' if c.id == chat.id }}>{{ c.title or c.tg_id }}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+
+<form method="post" action="/selection/{{ chat.id }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="card">
+    <label>Профиль интересов — он уходит в промпт оценки</label>
+    <textarea name="interests_profile"
+              placeholder="интересно: AI-видео, цены, инструменты; неинтересно: политика, флуд">{{ profile }}</textarea>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2 style="margin-top:0">Веса</h2>
+      {% for key, label in [('w_eng','вовлечённость'), ('w_use','применимость'),
+                            ('w_spec','конкретика'), ('w_rel','релевантность'),
+                            ('w_nov','новизна'), ('w_own','мои пометки')] %}
+        <label>{{ label }} — <code>{{ key }}</code></label>
+        <input type="number" step="0.01" min="0" max="2" name="{{ key }}" value="{{ weights[key] }}">
+      {% endfor %}
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">Штрафы и порог</h2>
+      {% for key, label in [('drama','склоки'), ('muted_author','заглушённые авторы'),
+                            ('repeat','повтор вчерашней темы')] %}
+        <label>{{ label }}</label>
+        <input type="number" step="0.01" min="0" max="1" name="penalty_{{ key }}" value="{{ penalties[key] }}">
+      {% endfor %}
+      <label>Порог попадания в дайджест</label>
+      <input type="number" step="0.01" min="0" max="2" name="threshold" value="{{ threshold }}">
+      <label>Максимум тем в дайджесте</label>
+      <input type="number" min="1" max="20" name="top_n" value="{{ top_n }}">
+    </div>
+  </div>
+  <button type="submit">Сохранить</button>
+</form>
+
+<div class="card" style="margin-top:16px">
+  <h2 style="margin-top:0">Прогнать на вчера</h2>
+  <p class="muted">Соберёт дайджест с текущими настройками и покажет результат.
+    Ничего не отправляет и не перезаписывает сохранённый дайджест.</p>
+  <form hx-post="/selection/{{ chat.id }}/preview" hx-target="#preview" hx-indicator="#wait">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <label>День</label>
+    <input type="text" name="day" value="{{ yesterday }}" style="max-width:200px">
+    <p><button type="submit">Прогнать</button>
+       <span id="wait" class="htmx-indicator muted">считаю…</span></p>
+  </form>
+  <div id="preview"></div>
+</div>
+{% endif %}
+{% endblock %}

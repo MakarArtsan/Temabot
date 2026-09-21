@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Группы{% endblock %}
+{% block h1 %}Группы{% endblock %}
+{% block content %}
+<div class="card">
+  {% if chats %}
+    <table>
+      <tr><th>Группа</th><th>Сбор</th><th>Дайджест</th><th>Копировщик</th><th>Время · хранение</th></tr>
+      {% for chat in chats %}{% include "_group_row.html" %}{% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">Групп пока нет. Они появятся, когда коллектор увидит чат
+      или бота добавят в группу.</p>
+  {% endif %}
+</div>
+<p class="muted">Новая группа появляется выключенной — включать нужно руками (ТЗ §4.8).
+  Бот и коллектор перечитывают настройки раз в минуту, перезапуск не нужен.</p>
+{% endblock %}
