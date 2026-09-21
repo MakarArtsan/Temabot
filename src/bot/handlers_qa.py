@@ -87,20 +87,55 @@ async def on_help(message: types.Message) -> None:
 
 @router.message(Command("ask"))
 async def on_ask(message: types.Message, command: CommandObject) -> None:
-    """Ответ по истории чата (TZ §4.4)."""
+    """Ответ по истории чата (TZ §4.4). С `#группа` — только по одной группе."""
     question = (command.args or "").strip()
     if not question:
-        await message.answer("Напиши так: /ask что решили про Seedance")
+        await message.answer(
+            "Напиши так: <code>/ask что решили про Seedance</code>\n"
+            "Или по одной группе: <code>/ask #рабочая когда конференция</code>",
+            parse_mode="HTML",
+        )
         return
     await _answer(message, question)
 
 
+async def split_group_filter(question: str) -> tuple[str, Chat | None, str | None]:
+    """Выделить `#группа` из вопроса (TZ §4.8).
+
+    Возвращает (вопрос без метки, найденная группа, текст ошибки).
+    """
+    if not question.startswith("#"):
+        return question, None, None
+
+    label, _, rest = question.partition(" ")
+    name = label[1:].strip()
+    rest = rest.strip()
+    if not name:
+        return rest, None, None
+
+    found = await repo.find_chats(name)
+    if not found:
+        return rest, None, f"Группы «{name}» не знаю. Посмотреть список — /groups"
+    if len(found) > 1:
+        titles = ", ".join(c.title or str(c.tg_id) for c in found[:5])
+        return rest, None, f"Под «{name}» подходит несколько групп: {titles}"
+    return rest, found[0], None
+
+
 async def _answer(message: types.Message, question: str) -> None:
+    question, group, error = await split_group_filter(question)
+    if error:
+        await message.answer(error)
+        return
+    if not question:
+        await message.answer("А вопрос?")
+        return
+
     if message.bot is not None:
         # ответ собирается несколько секунд, «печатает…» показывает, что бот жив
         await message.bot.send_chat_action(message.chat.id, "typing")
     try:
-        answer = await answer_question(question)
+        answer = await answer_question(question, chat_id=group.id if group else None)
     except Exception as exc:
         log.exception("Ответ на вопрос не собрался")
         await message.answer(f"Не получилось: {esc_html(str(exc))}", parse_mode="HTML")

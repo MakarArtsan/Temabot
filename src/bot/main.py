@@ -7,9 +7,9 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
+from src.bot import handlers_admin, handlers_qa
 from src.bot import handlers_copier as copier
-from src.bot import handlers_qa
-from src.bot.middlewares import OwnerOnly, RateLimit
+from src.bot.middlewares import CopierAccess, CopierRateLimit, OwnerOnly, RateLimit
 from src.config import cfg
 from src.db import pool
 from src.db.migrate import apply_schema
@@ -24,10 +24,11 @@ _dispatcher: Dispatcher | None = None
 def build_dispatcher() -> Dispatcher:
     """Собрать диспетчер. На процесс он один и собирается один раз.
 
-    Порядок важен (TZ §4.6): роутер копировщика идёт первым и публичен — он
-    работает для всех участников разрешённых групп. Роутер Q&A идёт вторым и
-    закрыт мидлварью на владельца; его перехватчик «любой текст — это вопрос»
-    сработает только в личке и только если копировщик сообщение не взял.
+    Порядок важен (TZ §4.6, §4.8): копировщик идёт первым и публичен, но его
+    мидлвари пускают только разрешённые группы и не пускают забаненных. Дальше
+    админ-роутер и Q&A — оба только для владельца. Перехватчик «любой текст —
+    это вопрос» стоит последним и срабатывает лишь в личке, если сообщение не
+    взяли ни копировщик, ни команды.
 
     Результат кэшируется: роутеры — модульные синглтоны, и повторная сборка
     навесила бы мидлвари второй раз, а aiogram запретил бы привязать один и тот
@@ -37,6 +38,14 @@ def build_dispatcher() -> Dispatcher:
     if _dispatcher is not None:
         return _dispatcher
 
+    # копировщик публичный, но только в разрешённых группах и не для забаненных
+    copier.router.message.middleware(CopierAccess())
+    copier.router.message.middleware(CopierRateLimit())
+
+    admin = handlers_admin.router
+    admin.message.middleware(OwnerOnly())
+    admin.callback_query.middleware(OwnerOnly())
+
     qa = handlers_qa.router
     qa.message.middleware(OwnerOnly())
     qa.message.middleware(RateLimit())
@@ -44,6 +53,7 @@ def build_dispatcher() -> Dispatcher:
 
     dp = Dispatcher()
     dp.include_router(copier.router)
+    dp.include_router(admin)
     dp.include_router(qa)
     _dispatcher = dp
     return dp

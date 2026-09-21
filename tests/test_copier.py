@@ -302,10 +302,14 @@ async def test_summary_failure_does_not_crash(monkeypatch: pytest.MonkeyPatch):
 def test_copier_router_goes_first():
     """Иначе перехватчик «любой текст — это вопрос» съел бы упоминания (TZ §4.6)."""
     names = [r.name for r in build_dispatcher().sub_routers]
-    assert names == ["copier", "qa"]
+    assert names == ["copier", "admin", "qa"]
 
 
-def test_copier_router_has_no_owner_middleware():
-    """Копировщик публичный: он работает для всех участников группы."""
+def test_copier_is_public_but_gated_by_access_rules():
+    """Копировщик работает для всех участников, но только в разрешённых группах."""
+    build_dispatcher()
     kinds = {type(m).__name__ for m in copier.router.message.middleware}
-    assert "OwnerOnly" not in kinds
+
+    assert "OwnerOnly" not in kinds, "иначе копировщик перестал бы работать в группе"
+    assert "CopierAccess" in kinds
+    assert "CopierRateLimit" in kinds

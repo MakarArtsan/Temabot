@@ -106,6 +106,73 @@ async def update_chat_settings(chat_id: int, patch: dict[str, Any]) -> dict[str,
     return dict(value or {})
 
 
+async def find_chats(query: str) -> list[Chat]:
+    """Поиск группы по куску названия — для `/ask #группа` (TZ §4.8)."""
+    rows = await pool.fetch(
+        """
+        select * from chats
+         where title ilike '%' || $1 || '%' or tg_id::text = $1
+         order by title nulls last
+        """,
+        query,
+    )
+    return [Chat.from_row(r) for r in rows]
+
+
+# ------------------------------------------------------------- блок-лист копировщика
+
+async def block_user(tg_user_id: int, reason: str | None = None) -> None:
+    await pool.execute(
+        """
+        insert into copier_blocklist (tg_user_id, reason) values ($1, $2)
+        on conflict (tg_user_id) do update set reason = excluded.reason
+        """,
+        tg_user_id,
+        reason,
+    )
+
+
+async def unblock_user(tg_user_id: int) -> bool:
+    result = await pool.execute(
+        "delete from copier_blocklist where tg_user_id = $1", tg_user_id
+    )
+    return result.endswith("1")
+
+
+async def list_blocked() -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        select b.tg_user_id, b.reason, a.name
+          from copier_blocklist b
+          left join authors a on a.tg_user_id = b.tg_user_id
+         order by b.created_at desc
+        """
+    )
+    return [dict(r) for r in rows]
+
+
+async def blocked_user_ids() -> set[int]:
+    rows = await pool.fetch("select tg_user_id from copier_blocklist")
+    return {int(r["tg_user_id"]) for r in rows}
+
+
+async def find_author(query: str) -> Author | None:
+    """Найти участника по id, @username или куску имени — для /ban (TZ §4.8)."""
+    cleaned = query.strip().lstrip("@")
+    row = await pool.fetchrow(
+        """
+        select * from authors
+         where tg_user_id::text = $1
+            or name ilike '@' || $1
+            or name ilike '%' || $1 || '%'
+         order by (tg_user_id::text = $1) desc, length(coalesce(name, ''))
+         limit 1
+        """,
+        cleaned,
+    )
+    return Author.from_row(row) if row else None
+
+
 # ------------------------------------------------------------------------ авторы
 
 async def upsert_author(tg_user_id: int, name: str | None) -> Author:

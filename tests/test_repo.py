@@ -572,3 +572,72 @@ async def test_mark_copied_survives_missing_author():
     )
     stored = await repo.get_message(chat_id, 11)
     assert stored is not None and stored.tg_user_id is None
+
+
+# ------------------------------------------------- доступ и блок-лист (§4.8)
+
+async def test_blocklist_roundtrip():
+    await repo.upsert_author(500, "Флудер")
+    await repo.block_user(500, reason="флудит")
+
+    assert await repo.blocked_user_ids() == {500}
+    blocked = await repo.list_blocked()
+    assert blocked[0]["name"] == "Флудер" and blocked[0]["reason"] == "флудит"
+
+    assert await repo.unblock_user(500) is True
+    assert await repo.blocked_user_ids() == set()
+    assert await repo.unblock_user(500) is False, "второй раз снимать нечего"
+
+
+async def test_block_user_twice_updates_reason():
+    await repo.block_user(500, reason="первая причина")
+    await repo.block_user(500, reason="вторая причина")
+
+    blocked = await repo.list_blocked()
+    assert len(blocked) == 1 and blocked[0]["reason"] == "вторая причина"
+
+
+async def test_find_author_by_id_name_and_username():
+    await repo.upsert_author(1001, "Вася Пупкин")
+    await repo.upsert_author(1002, "@petya")
+
+    by_id = await repo.find_author("1001")
+    by_name = await repo.find_author("пупкин")
+    by_username = await repo.find_author("@petya")
+
+    assert by_id is not None and by_id.tg_user_id == 1001
+    assert by_name is not None and by_name.tg_user_id == 1001
+    assert by_username is not None and by_username.tg_user_id == 1002
+    assert await repo.find_author("такого нет") is None
+
+
+async def test_find_chats_by_title_and_id():
+    await repo.get_or_create_chat(-100111, "Рабочая группа")
+    await repo.get_or_create_chat(-100222, "Домашний чат")
+
+    by_title = await repo.find_chats("рабочая")
+    by_id = await repo.find_chats("-100222")
+
+    assert [c.tg_id for c in by_title] == [-100111]
+    assert [c.tg_id for c in by_id] == [-100222]
+    assert await repo.find_chats("несуществующая") == []
+
+
+async def test_set_chat_flags_touches_only_what_is_given():
+    await repo.get_or_create_chat(-100111, "Группа")
+    await repo.set_chat_flags(-100111, collect=True, digest=True, copier="allow")
+
+    updated = await repo.set_chat_flags(-100111, copier="deny")
+
+    assert updated is not None
+    assert updated.copier == "deny"
+    assert updated.collect is True and updated.digest is True, "остальное не трогаем"
+
+
+async def test_set_chat_flags_rejects_unknown_copier_mode():
+    """Схема защищена check-констрейнтом: опечатка не должна тихо записаться."""
+    import asyncpg
+
+    await repo.get_or_create_chat(-100111, "Группа")
+    with pytest.raises(asyncpg.IntegrityConstraintViolationError):
+        await repo.set_chat_flags(-100111, copier="maybe")
