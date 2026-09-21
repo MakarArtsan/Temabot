@@ -101,8 +101,9 @@ async def on_mention(message: types.Message) -> None:
 
     if own_text:
         text, source_msg = own_text, message
-    elif target and (target.text or target.caption):
-        text, source_msg = (target.text or target.caption), target
+    elif target and (parent_text := target.text or target.caption):
+        # моржовое присваивание, чтобы mypy видел: здесь уже не None
+        text, source_msg = parent_text, target
     else:
         await message.reply(
             "Напиши текст после упоминания или ответь упоминанием на сообщение."

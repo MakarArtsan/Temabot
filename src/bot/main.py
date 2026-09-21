@@ -7,6 +7,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
+from src.bot import handlers_copier as copier
 from src.bot import handlers_qa
 from src.bot.middlewares import OwnerOnly, RateLimit
 from src.config import cfg
@@ -17,16 +18,34 @@ from src.digest.scheduler import build_scheduler
 log = logging.getLogger(__name__)
 
 
-def build_dispatcher() -> Dispatcher:
-    """Собрать диспетчер. Порядок роутеров важен: copier -> qa (TZ §4.6)."""
-    dp = Dispatcher()
+_dispatcher: Dispatcher | None = None
 
-    # Роутер копировщика подключается на шаге 9 первым, до qa.
+
+def build_dispatcher() -> Dispatcher:
+    """Собрать диспетчер. На процесс он один и собирается один раз.
+
+    Порядок важен (TZ §4.6): роутер копировщика идёт первым и публичен — он
+    работает для всех участников разрешённых групп. Роутер Q&A идёт вторым и
+    закрыт мидлварью на владельца; его перехватчик «любой текст — это вопрос»
+    сработает только в личке и только если копировщик сообщение не взял.
+
+    Результат кэшируется: роутеры — модульные синглтоны, и повторная сборка
+    навесила бы мидлвари второй раз, а aiogram запретил бы привязать один и тот
+    же роутер к двум диспетчерам.
+    """
+    global _dispatcher
+    if _dispatcher is not None:
+        return _dispatcher
+
     qa = handlers_qa.router
     qa.message.middleware(OwnerOnly())
     qa.message.middleware(RateLimit())
     qa.callback_query.middleware(OwnerOnly())
+
+    dp = Dispatcher()
+    dp.include_router(copier.router)
     dp.include_router(qa)
+    _dispatcher = dp
     return dp
 
 
@@ -44,6 +63,9 @@ async def run() -> None:
 
     me = await bot.get_me()
     log.info("Бот @%s запущен, владелец %s", me.username, cfg.OWNER_ID)
+
+    # кэшируем username и поднимаем Telegraph до начала приёма сообщений
+    await copier.init_copier(bot)
 
     scheduler = build_scheduler(bot)
     scheduler.start()

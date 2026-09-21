@@ -185,6 +185,51 @@ async def upsert_message(msg: Message) -> int:
     return int(row_id)
 
 
+async def mark_copied(
+    *,
+    chat_tg_id: int,
+    tg_msg_id: int,
+    text: str | None,
+    tg_user_id: int | None,
+    author_name: str | None,
+    date: datetime,
+) -> bool:
+    """Пометить сообщение скопированным через бота (TZ §4.6).
+
+    Если запись уже есть — её сохранил коллектор, значит трогаем только признаки
+    копирования: `source` не меняем, текст не перезаписываем (у коллектора он
+    полнее — с подписями к медиа и расшифровками).
+    Если записи нет — вставляем с `source = 'copier'`: бот-копировщик может
+    работать в группе, которую userbot не читает.
+
+    Возвращает True, если строка уже существовала.
+    """
+    chat = await get_or_create_chat(chat_tg_id)
+    if tg_user_id is not None:
+        await upsert_author(tg_user_id, author_name)
+
+    existed = await pool.fetchval(
+        """
+        insert into messages (chat_id, tg_msg_id, tg_user_id, author_name, text,
+                              source, is_pinned_by_me, copy_count, date)
+        values ($1, $2, $3, $4, $5, 'copier', true, 1, $6)
+        on conflict (chat_id, tg_msg_id) do update set
+            is_pinned_by_me = true,
+            copy_count      = messages.copy_count + 1,
+            author_name     = coalesce(messages.author_name, excluded.author_name),
+            text            = coalesce(messages.text, excluded.text)
+        returning (xmax <> 0) as existed
+        """,
+        chat.id,
+        tg_msg_id,
+        tg_user_id,
+        author_name,
+        text,
+        date,
+    )
+    return bool(existed)
+
+
 async def update_message_text(
     chat_id: int, tg_msg_id: int, text: str | None, edited_at: datetime | None = None
 ) -> bool:

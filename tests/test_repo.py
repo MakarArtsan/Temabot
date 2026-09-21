@@ -487,3 +487,88 @@ async def test_qa_log():
 
     row = await pool.fetchrow("select * from qa_log")
     assert row["question"] == "вопрос" and row["sources"] == [1, 2]
+
+
+# ------------------------------------------------------- копировщик (§4.6)
+
+async def test_mark_copied_does_not_duplicate_collector_record():
+    """Коллектор уже сохранил сообщение — копирование только помечает его."""
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 5, text="оригинальный текст коллектора"))
+
+    existed = await repo.mark_copied(
+        chat_tg_id=-1001234567890, tg_msg_id=5, text="текст из копировщика",
+        tg_user_id=1001, author_name="Вася",
+        date=datetime(2026, 9, 20, 12, 0, tzinfo=ZoneInfo(KAMCHATKA)),
+    )
+
+    assert existed is True
+    assert await repo.count_messages(chat_id) == 1, "дубля быть не должно"
+
+    stored = await repo.get_message(chat_id, 5)
+    assert stored is not None
+    assert stored.is_pinned_by_me is True
+    assert stored.copy_count == 1
+    assert stored.source == "collector", "источник не меняется (TZ §4.6)"
+    assert stored.text == "оригинальный текст коллектора", "текст коллектора полнее"
+
+
+async def test_mark_copied_inserts_when_collector_has_not_seen_it():
+    """Бот может работать в группе, которую userbot не читает."""
+    chat_id = await _chat()
+    existed = await repo.mark_copied(
+        chat_tg_id=-1001234567890, tg_msg_id=77, text="текст из копировщика",
+        tg_user_id=2002, author_name="Петя",
+        date=datetime(2026, 9, 20, 12, 0, tzinfo=ZoneInfo(KAMCHATKA)),
+    )
+
+    assert existed is False
+    stored = await repo.get_message(chat_id, 77)
+    assert stored is not None
+    assert stored.source == "copier"
+    assert stored.text == "текст из копировщика"
+    assert stored.is_pinned_by_me is True
+    assert stored.copy_count == 1
+
+
+async def test_mark_copied_counts_repeats():
+    chat_id = await _chat()
+    date_ = datetime(2026, 9, 20, 12, 0, tzinfo=ZoneInfo(KAMCHATKA))
+    for _ in range(3):
+        await repo.mark_copied(
+            chat_tg_id=-1001234567890, tg_msg_id=9, text="текст",
+            tg_user_id=1001, author_name="Вася", date=date_,
+        )
+
+    stored = await repo.get_message(chat_id, 9)
+    assert stored is not None and stored.copy_count == 3
+
+
+async def test_mark_copied_creates_chat_and_author():
+    """Группа могла быть ещё неизвестна — она появится выключенной (§4.8)."""
+    await repo.mark_copied(
+        chat_tg_id=-100555, tg_msg_id=1, text="текст", tg_user_id=3003,
+        author_name="Новичок",
+        date=datetime(2026, 9, 20, 12, 0, tzinfo=ZoneInfo(KAMCHATKA)),
+    )
+
+    chat = await repo.get_chat_by_tg_id(-100555)
+    assert chat is not None
+    assert (chat.collect, chat.digest, chat.copier) == (False, False, "ask")
+
+    from src.db import pool
+
+    author = await pool.fetchval("select name from authors where tg_user_id = 3003")
+    assert author == "Новичок"
+
+
+async def test_mark_copied_survives_missing_author():
+    """У сообщений от имени канала автора нет."""
+    chat_id = await _chat()
+    await repo.mark_copied(
+        chat_tg_id=-1001234567890, tg_msg_id=11, text="пост канала",
+        tg_user_id=None, author_name=None,
+        date=datetime(2026, 9, 20, 12, 0, tzinfo=ZoneInfo(KAMCHATKA)),
+    )
+    stored = await repo.get_message(chat_id, 11)
+    assert stored is not None and stored.tg_user_id is None

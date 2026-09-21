@@ -51,9 +51,6 @@ warn_redundant_casts = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
 files = ["src"]
-# handlers_copier.py — готовый файл из ТЗ §4.6, он ссылается на repo.mark_copied и
-# answer_about_thread, которых ещё нет. Снять исключение на шаге 9, когда они появятся.
-exclude = ["src/bot/handlers_copier.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
