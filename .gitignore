@@ -1,0 +1,25 @@
+# секреты и сессии — никогда в репозиторий
+.env
+*.session
+*.session-journal
+data/*
+!data/.gitkeep
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# модели и кэш
+models/
+.cache/
+
+# редакторы
+.idea/
+.vscode/
+.DS_Store
