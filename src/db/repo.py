@@ -225,6 +225,34 @@ async def set_transcript(chat_id: int, tg_msg_id: int, transcript: str) -> bool:
     return result.endswith("1")
 
 
+async def set_media_path(chat_id: int, tg_msg_id: int, media_path: str) -> bool:
+    result = await pool.execute(
+        "update messages set media_path = $3 where chat_id = $1 and tg_msg_id = $2",
+        chat_id,
+        tg_msg_id,
+        media_path,
+    )
+    return result.endswith("1")
+
+
+async def get_pending_transcriptions(chat_id: int, limit: int = 200) -> list[Message]:
+    """Голосовые без расшифровки: очередь живёт в памяти и теряется при рестарте."""
+    rows = await pool.fetch(
+        """
+        select * from messages
+         where chat_id = $1
+           and media_type in ('voice', 'audio')
+           and (transcript is null or transcript = '')
+           and deleted_at is null
+         order by date desc
+         limit $2
+        """,
+        chat_id,
+        limit,
+    )
+    return [Message.from_row(r) for r in rows]
+
+
 async def set_thread_id(chat_id: int, tg_msg_ids: list[int], thread_id: int) -> int:
     value = await pool.fetchval(
         """

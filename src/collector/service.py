@@ -18,6 +18,7 @@ from src.collector.handlers import AuthorCache, normalize_message
 from src.config import cfg
 from src.db import repo
 from src.db.models import Chat
+from src.media.pipeline import MediaJob, MediaQueue, NullMediaQueue
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +31,16 @@ HEARTBEAT_KEY = "collector:heartbeat"
 class Collector:
     """Сбор сообщений в БД. В dry-run печатает в консоль и не пишет ничего."""
 
-    def __init__(self, client: Any, *, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        dry_run: bool = False,
+        media: MediaQueue | NullMediaQueue | None = None,
+    ) -> None:
         self.client = client
         self.dry_run = dry_run
+        self.media = media or NullMediaQueue()
         self.authors = AuthorCache()
         self._chats_by_tg_id: dict[int, Chat] = {}
         self.saved = 0
@@ -76,6 +84,18 @@ class Collector:
 
         await repo.upsert_message(row)
         self.saved += 1
+
+        if row.media_type:
+            # расшифровка идёт в фоне: приём сообщений не ждёт трёхминутное голосовое
+            self.media.submit(
+                MediaJob(
+                    chat_id=chat.id,
+                    chat_tg_id=chat.tg_id,
+                    tg_msg_id=row.tg_msg_id,
+                    media_type=row.media_type,
+                    message=message,
+                )
+            )
 
     # ---------------------------------------------------------------- события
 
@@ -159,7 +179,11 @@ class Collector:
             if not self.dry_run:
                 await repo.set_state(
                     HEARTBEAT_KEY,
-                    {"at": datetime.now(UTC).isoformat(), "saved": self.saved},
+                    {
+                        "at": datetime.now(UTC).isoformat(),
+                        "saved": self.saved,
+                        "media": self.media.stats.as_dict(),
+                    },
                 )
             await asyncio.sleep(interval)
 
@@ -171,9 +195,49 @@ def register_handlers(collector: Collector, chat_ids: list[int]) -> None:
     client.add_event_handler(collector.on_message_deleted, events.MessageDeleted())
 
 
+def build_media_queue(*, dry_run: bool) -> MediaQueue | NullMediaQueue:
+    """Очередь расшифровки или заглушка (ASR_ENABLED=false, TZ шаг 13)."""
+    if dry_run or not cfg.ASR_ENABLED:
+        log.info("Расшифровка выключена")
+        return NullMediaQueue()
+    from src.media.voice import transcribe
+
+    return MediaQueue(transcribe)
+
+
+async def requeue_pending_media(collector: Collector, chat: Chat, limit: int = 200) -> int:
+    """Догнать голосовые, оставшиеся без расшифровки.
+
+    Очередь живёт в памяти, поэтому рестарт посреди обработки теряет задания.
+    В БД такие сообщения видно: media_type = voice, а transcript пуст.
+    """
+    pending = await repo.get_pending_transcriptions(chat.id, limit)
+    if not pending:
+        return 0
+
+    queued = 0
+    for row in pending:
+        message = await collector.client.get_messages(chat.tg_id, ids=row.tg_msg_id)
+        if message is None:
+            continue
+        job = MediaJob(
+            chat_id=chat.id,
+            chat_tg_id=chat.tg_id,
+            tg_msg_id=row.tg_msg_id,
+            media_type=row.media_type or "voice",
+            message=message,
+        )
+        if collector.media.submit(job):
+            queued += 1
+    if queued:
+        log.info("В очередь на расшифровку возвращено %s сообщений", queued)
+    return queued
+
+
 async def run(*, dry_run: bool = False) -> None:
     client = build_client()
-    collector = Collector(client, dry_run=dry_run)
+    media = build_media_queue(dry_run=dry_run)
+    collector = Collector(client, dry_run=dry_run, media=media)
 
     await with_flood_retry(lambda: client.start(), description="подключение к Telegram")
     me = await client.get_me()
@@ -193,9 +257,14 @@ async def run(*, dry_run: bool = False) -> None:
             description=f"докачка чата {chat.tg_id}",
         )
 
+    await media.start()
+    for chat in chats:
+        await requeue_pending_media(collector, chat)
+
     register_handlers(collector, [c.tg_id for c in chats])
     heartbeat = asyncio.create_task(collector.heartbeat_loop())
     try:
         await client.run_until_disconnected()
     finally:
         heartbeat.cancel()
+        await media.stop()

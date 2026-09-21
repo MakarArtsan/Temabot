@@ -39,6 +39,11 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003"]  # кириллица в строках и комментариях — это норма
 
+[tool.ruff.lint.per-file-ignores]
+# В тестах блокирующая работа с файлами безвредна: там нет живого цикла событий,
+# который кто-то ждёт. В src это правило остаётся включённым.
+"tests/**" = ["ASYNC240"]
+
 [tool.mypy]
 python_version = "3.11"
 warn_unused_configs = true

@@ -52,9 +52,17 @@ class Settings(BaseSettings):
     # --- БД ---
     DATABASE_URL: str = ""
 
-    # --- ASR ---
+    # --- ASR (расшифровка голосовых) ---
+    ASR_ENABLED: bool = True          # на слабом тарифе можно выключить (TZ шаг 13)
     WHISPER_MODEL: str = "small"
     WHISPER_DEVICE: str = "cpu"
+    WHISPER_COMPUTE_TYPE: str = "int8"
+    WHISPER_LANGUAGE: str = "ru"      # пусто -> автоопределение (дороже и ошибается)
+    WHISPER_BEAM_SIZE: int = 5        # 1 быстрее примерно вдвое, качество чуть ниже
+    WHISPER_CPU_THREADS: int = 0      # 0 -> по числу ядер
+    MEDIA_CONCURRENCY: int = 2        # параллельных расшифровок (TZ шаг 5)
+    MEDIA_QUEUE_MAXSIZE: int = 1000
+    MEDIA_KEEP_FILES: bool = True     # false -> удалять аудио после расшифровки
 
     # --- Сеть / прочее ---
     PROXY_URL: str = ""
