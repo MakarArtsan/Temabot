@@ -1,0 +1,15 @@
+# Конфигурация Amvera. Один файл на три проекта: collector, bot и web
+# отличаются только переменной APP_ROLE, которая задаётся в настройках проекта.
+meta:
+  environment: docker
+  toolchain:
+    name: docker
+
+build:
+  dockerfile: Dockerfile
+
+run:
+  # Порт слушает только веб-админка; для collector и bot он не используется
+  containerPort: 80
+  # Постоянное хранилище: сессия Telegram, скачанные голосовые, кэш моделей
+  persistenceMount: /data

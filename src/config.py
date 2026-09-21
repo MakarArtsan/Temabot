@@ -14,7 +14,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
 
-AppRole = Literal["collector", "bot", "web"]
+# migrate — разовый запуск миграций тем же образом (docker/entrypoint.sh)
+AppRole = Literal["collector", "bot", "web", "migrate"]
 
 
 class Settings(BaseSettings):

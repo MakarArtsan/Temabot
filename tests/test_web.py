@@ -282,3 +282,25 @@ def test_selection_page_shows_weights(owner_client: Any):
 def test_dashboard_shows_numbers(owner_client: Any):
     text = owner_client.get("/").text
     assert "42" in text and "Очередь расшифровки" in text
+
+
+# ====================================================== проверка живости
+
+def test_healthz_is_public_but_tells_nothing(client: Any):
+    """Amvera и docker должны видеть, что процесс жив, не заходя в админку."""
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert set(body) == {"status", "database"}, "ничего лишнего наружу"
+
+
+def test_healthz_reports_database_trouble(client: Any, monkeypatch: pytest.MonkeyPatch):
+    async def broken(*a: Any, **kw: Any) -> Any:
+        raise ConnectionError("база недоступна")
+
+    monkeypatch.setattr(cfg, "DATABASE_URL", "postgresql://nope")
+    monkeypatch.setattr(web_app.pool, "fetchval", broken)
+
+    assert client.get("/healthz").json()["database"] == "fail"

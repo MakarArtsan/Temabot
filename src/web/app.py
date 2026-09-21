@@ -63,6 +63,23 @@ async def on_http_error(request: Request, exc: HTTPException) -> Response:
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
 
+@app.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Проверка живости для Amvera и docker HEALTHCHECK.
+
+    Единственная публичная ручка кроме страницы входа: она не отдаёт ничего о
+    содержимом групп — только то, что процесс жив и база отвечает.
+    """
+    database = "off"
+    if cfg.DATABASE_URL:
+        try:
+            await pool.fetchval("select 1")
+            database = "ok"
+        except Exception:
+            database = "fail"
+    return JSONResponse({"status": "ok", "database": database})
+
+
 # ---------------------------------------------------------------------- вход
 
 @app.get("/login", response_class=HTMLResponse)

@@ -122,3 +122,12 @@ def test_media_dir_under_data_dir(tmp_path: Path, settings_cls):
 def test_config_module_exposes_singleton():
     importlib.reload(config_module)
     assert config_module.cfg is config_module.get_settings()
+
+
+def test_all_container_roles_are_valid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
+):
+    """Точка входа образа умеет четыре роли — конфиг должен принимать каждую."""
+    for role in ("collector", "bot", "web", "migrate"):
+        monkeypatch.setenv("APP_ROLE", role)
+        assert settings_cls(_env_file=tmp_path / "absent.env").APP_ROLE == role
