@@ -211,7 +211,9 @@ async def test_save_digest_is_idempotent_per_day():
     day = date(2026, 9, 20)
     first = await repo.save_digest(chat_id, day, "первая версия", msg_count=10)
     second = await repo.save_digest(
-        chat_id, day, "вторая версия", topics=[{"title": "Seedance"}], msg_count=12
+        chat_id, day, "вторая версия",
+        payload={"topics": [{"title": "Seedance"}], "highlights": ["главное"]},
+        msg_count=12,
     )
 
     assert first == second
@@ -219,6 +221,7 @@ async def test_save_digest_is_idempotent_per_day():
     assert stored is not None
     assert stored.summary_md == "вторая версия"
     assert stored.topics == [{"title": "Seedance"}]
+    assert stored.payload["highlights"] == ["главное"], "структура дайджеста цела"
     assert stored.msg_count == 12
 
 
@@ -242,3 +245,116 @@ async def test_log_llm_usage():
 
     total = await pool.fetchval("select count(*) from llm_usage where chat_id = $1", chat_id)
     assert total == 1
+
+
+# ------------------------------------------------- запросы для команд бота
+
+async def test_search_finds_by_russian_morphology():
+    """Полнотекстовый поиск должен понимать склонения."""
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 1, text="обсуждали цены на подписку"))
+    await repo.upsert_message(_msg(chat_id, 2, text="совсем про другое"))
+
+    found = await repo.search_messages("цена подписки")
+    assert [m.tg_msg_id for m in found] == [1]
+
+
+async def test_search_looks_into_voice_transcripts():
+    """Для читателя расшифровка голосового — такой же текст."""
+    chat_id = await _chat()
+    await repo.upsert_message(
+        _msg(chat_id, 3, text=None, media_type="voice", transcript="говорю про Seedance")
+    )
+    assert [m.tg_msg_id for m in await repo.search_messages("Seedance")] == [3]
+
+
+async def test_search_skips_deleted():
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 4, text="удалённое про Seedance"))
+    await repo.soft_delete_messages(chat_id, [4])
+
+    assert await repo.search_messages("Seedance") == []
+
+
+async def test_search_respects_limit():
+    chat_id = await _chat()
+    for n in range(10, 20):
+        await repo.upsert_message(_msg(chat_id, n, text="одинаковый текст про рендер"))
+
+    assert len(await repo.search_messages("рендер", limit=3)) == 3
+
+
+async def test_author_activity():
+    """Этот запрос падал на приведении типов — проверяем его на живой базе."""
+    chat_id = await _chat()
+    for n in range(5):
+        await repo.upsert_message(_msg(chat_id, n + 1, text=f"сообщение {n}"))
+    await repo.upsert_message(_msg(chat_id, 99, tg_user_id=2002, author_name="Петя"))
+
+    found = await repo.get_author_activity("Вася")
+    assert found is not None
+    assert found["messages"] == 5
+    assert found["name"] == "Вася"
+
+    assert await repo.get_author_activity("Такого нет") is None
+
+
+async def test_author_activity_by_user_id():
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 1))
+    found = await repo.get_author_activity("1001")
+    assert found is not None and found["tg_user_id"] == 1001
+
+
+async def test_collection_stats():
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 1))
+    await repo.upsert_message(
+        _msg(chat_id, 2, media_type="voice", text=None, transcript="расшифровка")
+    )
+    await repo.log_llm_usage(
+        chat_id=chat_id, purpose="summary", model="m", tokens_in=100, tokens_out=50
+    )
+    await repo.save_digest(chat_id, date(2026, 9, 20), "текст")
+
+    stats = await repo.get_collection_stats()
+
+    assert stats["messages"] == 2
+    assert stats["voices"] == 1
+    assert stats["transcribed"] == 1
+    assert stats["tokens_in"] == 100 and stats["tokens_out"] == 50
+    assert stats["llm_calls"] == 1
+    assert stats["digests"] == 1
+    assert stats["last_at"] is not None
+
+
+async def test_list_digests_covers_the_week():
+    chat_id = await _chat()
+    for day in range(14, 22):
+        await repo.save_digest(chat_id, date(2026, 9, day), f"день {day}")
+
+    week = await repo.list_digests(chat_id, days=7, until=date(2026, 9, 21))
+
+    assert [d.day.day for d in week] == [15, 16, 17, 18, 19, 20, 21]
+
+
+async def test_set_pinned():
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 1))
+
+    assert await repo.set_pinned(chat_id, 1) is True
+    stored = await repo.get_message(chat_id, 1)
+    assert stored is not None and stored.is_pinned_by_me is True
+    assert await repo.set_pinned(chat_id, 404) is False
+
+
+async def test_pending_transcriptions():
+    chat_id = await _chat()
+    await repo.upsert_message(_msg(chat_id, 1, media_type="voice", text=None))
+    await repo.upsert_message(
+        _msg(chat_id, 2, media_type="voice", text=None, transcript="уже есть")
+    )
+    await repo.upsert_message(_msg(chat_id, 3, text="обычный текст"))
+
+    pending = await repo.get_pending_transcriptions(chat_id)
+    assert [m.tg_msg_id for m in pending] == [1]

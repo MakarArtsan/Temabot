@@ -19,7 +19,7 @@ from src.config import cfg
 from src.db import pool, repo
 from src.db.models import Chat, Message
 from src.digest import prompts
-from src.digest.render import DigestData, Topic, render
+from src.digest.render import DigestData, Topic, render, render_html
 from src.llm.client import Usage, chat_json
 from src.nlp.threads import Thread, segment
 
@@ -77,9 +77,15 @@ class DigestResult:
     topics: list[Topic]
     usage: Usage
     msg_count: int
+    data: DigestData | None = None
     mapped: int = 0            # тредов разобрано моделью
     failed: int = 0            # тредов, на которых модель не ответила
     digest_id: int | None = None
+
+    @property
+    def html(self) -> str:
+        """Тот же дайджест в формате, который принимает Telegram."""
+        return render_html(self.data) if self.data else self.markdown
 
     @property
     def llm_is_down(self) -> bool:
@@ -308,6 +314,7 @@ async def build_digest(
         topics=selected,
         usage=total_usage,
         msg_count=len(messages),
+        data=data,
         mapped=mapped,
         failed=failed,
     )
@@ -329,28 +336,11 @@ async def run_for_chat(
             chat.id,
             day,
             result.markdown,
-            topics=[_topic_as_dict(t) for t in result.topics],
+            payload=result.data.to_dict() if result.data else {},
             msg_count=result.msg_count,
             tokens_used=result.usage.tokens_in + result.usage.tokens_out,
         )
     return result
-
-
-def _topic_as_dict(topic: Topic) -> dict[str, Any]:
-    return {
-        "thread_id": topic.thread_id,
-        "title": topic.title,
-        "decision": topic.decision,
-        "debate": topic.debate,
-        "open_questions": topic.open_questions,
-        "links": topic.links,
-        "mentions": topic.mentions,
-        "key_msg_ids": topic.key_msg_ids,
-        "contributors": topic.contributors,
-        "msg_count": topic.msg_count,
-        "reactions": topic.reactions,
-        "score": topic.score,
-    }
 
 
 async def _main() -> None:

@@ -137,28 +137,41 @@ class Message:
 
 @dataclass(slots=True)
 class Digest:
+    """Дайджест за день.
+
+    В `payload` лежит вся структура (темы, «главное», вопросы без ответа,
+    статистика) — из неё команда `/digest <дата>` собирает тот же вид, что был
+    при первой отправке, не разбирая обратно готовый текст.
+    """
+
     chat_id: int
     day: date
     summary_md: str
     id: int | None = None
-    topics: list[dict[str, Any]] = field(default_factory=list)
+    payload: dict[str, Any] = field(default_factory=dict)
     msg_count: int = 0
     tokens_used: int = 0
     created_at: datetime | None = None
 
+    @property
+    def topics(self) -> list[dict[str, Any]]:
+        return list(self.payload.get("topics") or [])
+
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> Digest:
-        topics = row["topics"]
-        if isinstance(topics, str):
+        stored = row["topics"]
+        if isinstance(stored, str):
             import json
 
-            topics = json.loads(topics)
+            stored = json.loads(stored)
+        # старые записи хранили просто список тем
+        payload = stored if isinstance(stored, dict) else {"topics": list(stored or [])}
         return cls(
             id=row["id"],
             chat_id=row["chat_id"],
             day=row["day"],
             summary_md=row["summary_md"],
-            topics=list(topics or []),
+            payload=payload,
             msg_count=row["msg_count"],
             tokens_used=row["tokens_used"],
             created_at=row["created_at"],

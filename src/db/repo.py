@@ -335,7 +335,7 @@ async def save_digest(
     chat_id: int,
     day: date_type,
     summary_md: str,
-    topics: list[dict[str, Any]] | None = None,
+    payload: dict[str, Any] | list[dict[str, Any]] | None = None,
     msg_count: int = 0,
     tokens_used: int = 0,
 ) -> int:
@@ -355,7 +355,7 @@ async def save_digest(
         chat_id,
         day,
         summary_md,
-        topics or [],
+        payload if payload is not None else {},
         msg_count,
         tokens_used,
     )
@@ -367,6 +367,137 @@ async def get_digest(chat_id: int, day: date_type) -> Digest | None:
         "select * from digests where chat_id = $1 and day = $2", chat_id, day
     )
     return Digest.from_row(row) if row else None
+
+
+async def list_digests(chat_id: int, days: int = 7, until: date_type | None = None) -> list[Digest]:
+    """Дайджесты за последние дни — основа для /week (TZ §4.5)."""
+    last_day = until or date_type.today()
+    rows = await pool.fetch(
+        """
+        select * from digests
+         where chat_id = $1 and day > $2::date - $3::int and day <= $2::date
+         order by day
+        """,
+        chat_id,
+        last_day,
+        days,
+    )
+    return [Digest.from_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------- поиск
+
+async def search_messages(
+    query: str, *, chat_id: int | None = None, limit: int = 10
+) -> list[Message]:
+    """Полнотекстовый поиск по русской морфологии (TZ §4.5, /search).
+
+    Ищем и по тексту, и по расшифровке голосовых — для читателя это одно и то же.
+    """
+    rows = await pool.fetch(
+        """
+        select *,
+               ts_rank(
+                   to_tsvector('russian', coalesce(text, '') || ' ' || coalesce(transcript, '')),
+                   websearch_to_tsquery('russian', $1)
+               ) as rank
+          from messages
+         where ($2::bigint is null or chat_id = $2)
+           and deleted_at is null
+           and to_tsvector('russian', coalesce(text, '') || ' ' || coalesce(transcript, ''))
+               @@ websearch_to_tsquery('russian', $1)
+         order by rank desc, date desc
+         limit $3
+        """,
+        query,
+        chat_id,
+        limit,
+    )
+    return [Message.from_row(r) for r in rows]
+
+
+# ------------------------------------------------------------------ статистика
+
+async def get_collection_stats(chat_id: int | None = None) -> dict[str, Any]:
+    """Для команды /stats: сколько собрано, когда последнее, сколько потрачено."""
+    row = await pool.fetchrow(
+        """
+        select count(*)                                as messages,
+               count(*) filter (where transcript <> '') as transcribed,
+               count(*) filter (where media_type = 'voice') as voices,
+               max(date)                               as last_at,
+               count(distinct tg_user_id)              as authors
+          from messages
+         where ($1::bigint is null or chat_id = $1) and deleted_at is null
+        """,
+        chat_id,
+    )
+    tokens = await pool.fetchrow(
+        """
+        select coalesce(sum(tokens_in), 0)  as tokens_in,
+               coalesce(sum(tokens_out), 0) as tokens_out,
+               count(*)                     as calls
+          from llm_usage
+         where ($1::bigint is null or chat_id = $1)
+           and created_at > now() - interval '30 days'
+        """,
+        chat_id,
+    )
+    digests = await pool.fetchval(
+        "select count(*) from digests where ($1::bigint is null or chat_id = $1)", chat_id
+    )
+    return {
+        "messages": row["messages"] if row else 0,
+        "transcribed": row["transcribed"] if row else 0,
+        "voices": row["voices"] if row else 0,
+        "authors": row["authors"] if row else 0,
+        "last_at": row["last_at"] if row else None,
+        "tokens_in": tokens["tokens_in"] if tokens else 0,
+        "tokens_out": tokens["tokens_out"] if tokens else 0,
+        "llm_calls": tokens["calls"] if tokens else 0,
+        "digests": digests or 0,
+    }
+
+
+async def get_author_activity(
+    name_or_id: str, *, chat_id: int | None = None, days: int = 30
+) -> dict[str, Any] | None:
+    """Для /who: кто это, сколько пишет, о чём (TZ §4.5)."""
+    row = await pool.fetchrow(
+        """
+        select tg_user_id,
+               max(author_name)  as name,
+               count(*)          as messages,
+               max(date)         as last_at,
+               count(*) filter (where media_type = 'voice') as voices,
+               count(*) filter (where reply_to is not null) as replies
+          from messages
+         where ($2::bigint is null or chat_id = $2)
+           and deleted_at is null
+           and date > now() - make_interval(days => $3)
+           and (author_name ilike '%' || $1 || '%' or tg_user_id::text = $1)
+         group by tg_user_id
+         order by count(*) desc
+         limit 1
+        """,
+        name_or_id,
+        chat_id,
+        days,
+    )
+    if row is None:
+        return None
+    return dict(row)
+
+
+async def set_pinned(chat_id: int, tg_msg_id: int, pinned: bool = True) -> bool:
+    """Команда /pin реплаем: пометить сообщение важным (TZ §4.5)."""
+    result = await pool.execute(
+        "update messages set is_pinned_by_me = $3 where chat_id = $1 and tg_msg_id = $2",
+        chat_id,
+        tg_msg_id,
+        pinned,
+    )
+    return result.endswith("1")
 
 
 async def log_llm_usage(
