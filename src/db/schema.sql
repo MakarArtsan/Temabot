@@ -181,3 +181,37 @@ create table if not exists author_stats_daily (
 );
 
 create table if not exists state (key text primary key, value jsonb);  -- last_msg_id и пр.
+
+-- ------------------------------------------------- приватность (TZ §9)
+
+-- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями
+-- anon/authenticated, а publishable-ключ по своей природе публичный: его вшивают
+-- в браузерный код. Без этого блока содержимое закрытой группы читается по нему
+-- любым, кто этот ключ увидел.
+--
+-- RLS без единой политики = полный запрет для anon/authenticated. Процессы
+-- collector/bot/web ходят напрямую под ролью-владельцем, на неё RLS не действует.
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'chats', 'authors', 'copier_blocklist', 'settings', 'llm_usage', 'messages',
+    'chunks', 'digests', 'digest_items', 'feedback', 'qa_log', 'thread_contrib',
+    'author_stats_daily', 'state'
+  ] loop
+    execute format('alter table %I enable row level security', t);
+  end loop;
+end $$;
+
+-- Второй рубеж: снять гранты публичных ролей, если они вообще есть в этой БД
+-- (на обычном Postgres ролей anon/authenticated не существует — блок пропускается).
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    revoke all on all tables in schema public from anon, authenticated;
+    revoke all on all sequences in schema public from anon, authenticated;
+    alter default privileges in schema public revoke all on tables from anon, authenticated;
+    alter default privileges in schema public revoke all on sequences from anon, authenticated;
+  end if;
+end $$;

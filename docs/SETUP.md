@@ -35,7 +35,7 @@ TZ=Asia/Kamchatka
 | `TG_API_ID`, `TG_API_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools → создать приложение. Выдадут число `api_id` и строку `api_hash` |
 | `BOT_TOKEN` | @BotFather → твой бот-копировщик → `/token` (лучше перевыпустить: старый лежал в коде) |
 | `LLM_API_KEY` | [platform.deepseek.com](https://platform.deepseek.com) → API keys |
-| `DATABASE_URL` | Supabase → проект → Connect → строка вида `postgresql://postgres:ПАРОЛЬ@db.xxx.supabase.co:5432/postgres` |
+| `DATABASE_URL` | Supabase → проект → **Connect** → вкладка ORMs/URI → строка вида `postgresql://postgres:ПАРОЛЬ@db.xxx.supabase.co:5432/postgres`. Это не то же самое, что ключи `NEXT_PUBLIC_*` (см. ниже) |
 | `TELEGRAPH_TOKEN` | оставь пустым: при первом запуске бот создаст аккаунт и напишет токен в лог — тогда впишешь |
 | `TG_SESSION_STRING` | оставь пустым для локального запуска; для деплоя получишь через `make login` (см. ниже) |
 | `WEB_SECRET_KEY` | любая длинная случайная строка, например из `python3 -c "import secrets; print(secrets.token_hex(32))"` |
@@ -70,6 +70,24 @@ TZ=Asia/Kamchatka
 запустить в браузере — Google Colab или GitHub Codespaces работают и на телефоне.
 Минус честный: строка сессии — это полный доступ к твоему Telegram-аккаунту, и она
 пройдёт через чужой сервер. Безопаснее дождаться компьютера.
+
+## Какие ключи Supabase нужны, а какие нет
+
+У Supabase два разных вида доступа, и проекту нужен **второй**:
+
+- **`NEXT_PUBLIC_SUPABASE_URL` + publishable key** — доступ к REST API из браузера.
+  Такой ключ публичный по своей природе: его вшивают в код страницы, его видит любой
+  посетитель. Создавать таблицы им нельзя. Нашему проекту он не нужен вообще:
+  collector и bot ходят в Postgres напрямую (asyncpg, сырой SQL, pgvector, полнотекстовый
+  поиск), а не через REST.
+- **`DATABASE_URL`** — строка подключения к самой базе, с паролем внутри.
+  Вот она и нужна. Это настоящий секрет: полный доступ к базе.
+
+**Важно про приватность.** Supabase по умолчанию отдаёт таблицы схемы `public` наружу
+через REST под публичным ключом. Для базы с перепиской закрытой группы это дыра, поэтому
+в `schema.sql` включён RLS без политик: для публичных ролей это полный запрет, а процессы
+бота ходят под ролью-владельцем и работают как раньше. Проверено: REST отвечает `401
+permission denied` и на чтение, и на запись.
 
 ## Первый вход в Telegram-аккаунт
 
