@@ -94,7 +94,8 @@ def extract_json(text: str) -> Any:
 
 
 async def chat(
-    messages: list[dict[str, str]],
+    # у мультимодального сообщения content — список блоков, а не строка
+    messages: list[dict[str, Any]],
     *,
     purpose: str,
     chat_id: int | None = None,
@@ -142,7 +143,7 @@ async def chat(
 
 
 async def chat_json(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     purpose: str,
     chat_id: int | None = None,

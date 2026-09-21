@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     TELEGRAPH_TOKEN: str = ""
     TELEGRAPH_SHORT_NAME: str = "TeleTemaBot"
     BOT_USERNAME: str = ""            # без «собаки»; нужен виджету входа в админку
+    # telegraph — как в исходнике: страница открывается любым, у кого есть ссылка.
+    # dm — текст приходит в личку запросившему и наружу не уходит (TZ §4.6).
+    COPY_MODE: str = "telegraph"
 
     # --- LLM (OpenAI-совместимый провайдер) ---
     LLM_BASE_URL: str = "https://api.deepseek.com"
@@ -61,6 +64,11 @@ class Settings(BaseSettings):
 
     # --- БД ---
     DATABASE_URL: str = ""
+    DB_POOL_SIZE: int = 10
+    # Пулер Supabase в режиме транзакций (порт 6543) ломает подготовленные
+    # выражения asyncpg. Определяется автоматически по строке подключения,
+    # но можно включить принудительно.
+    DB_DISABLE_STATEMENT_CACHE: bool = False
 
     # --- ASR (расшифровка голосовых) ---
     ASR_ENABLED: bool = True          # на слабом тарифе можно выключить (TZ шаг 13)
@@ -73,6 +81,9 @@ class Settings(BaseSettings):
     MEDIA_CONCURRENCY: int = 2        # параллельных расшифровок (TZ шаг 5)
     MEDIA_QUEUE_MAXSIZE: int = 1000
     MEDIA_KEEP_FILES: bool = True     # false -> удалять аудио после расшифровки
+    # Описание картинок мультимодальной моделью (TZ §4.1). Выключено: на активной
+    # группе это сотни вызовов в день, а пользы меньше, чем от расшифровки голосовых.
+    VISION_ENABLED: bool = False
 
     # --- Сеть / прочее ---
     PROXY_URL: str = ""

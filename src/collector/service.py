@@ -197,12 +197,13 @@ def register_handlers(collector: Collector, chat_ids: list[int]) -> None:
 
 def build_media_queue(*, dry_run: bool) -> MediaQueue | NullMediaQueue:
     """Очередь расшифровки или заглушка (ASR_ENABLED=false, TZ шаг 13)."""
-    if dry_run or not cfg.ASR_ENABLED:
-        log.info("Расшифровка выключена")
+    if dry_run or not (cfg.ASR_ENABLED or cfg.VISION_ENABLED):
+        log.info("Обработка медиа выключена")
         return NullMediaQueue()
+    from src.media.image import describe_image
     from src.media.voice import transcribe
 
-    return MediaQueue(transcribe)
+    return MediaQueue(transcribe, describer=describe_image)
 
 
 async def requeue_pending_media(collector: Collector, chat: Chat, limit: int = 200) -> int:

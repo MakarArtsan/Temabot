@@ -24,7 +24,7 @@ from src.llm.client import Usage, chat_json
 from src.nlp.threads import Thread, segment
 from src.scoring import score as scoring
 from src.scoring.llm_rubric import Rubric, rate_thread
-from src.scoring.novelty import score_novelty
+from src.scoring.novelty import find_similar, score_novelty
 from src.scoring.signals import ThreadSignals, collect_signals, engagement, normalize
 
 log = logging.getLogger(__name__)
@@ -205,7 +205,7 @@ async def score_topic(
     signals: ThreadSignals,
     peers: list[ThreadSignals],
     history: dict[str, list[float]],
-    recent_embeddings: list[list[float]],
+    recent_topics: list[dict[str, Any]],
     examples: list[dict[str, Any]],
     llm: LLMCall = chat_json,
 ) -> tuple[scoring.Scored, Usage]:
@@ -213,16 +213,28 @@ async def score_topic(
     normalized = normalize(signals, history, peers=peers)
     engagement_value = engagement(normalized)
 
+    # похожесть считаем до рубрики: если тема повторяется, модель должна
+    # ответить, что в ней нового по сравнению с прошлым разом (TZ §4.7)
+    similar, title_similarity = await find_similar(topic.title, recent_topics)
+
     try:
-        rubric, usage = await rate_thread(thread, chat, examples=examples, llm=llm)
+        rubric, usage = await rate_thread(
+            thread, chat, examples=examples, similar=similar, llm=llm
+        )
     except Exception:
         # без рубрики тема не выбывает: остаются сигналы и новизна
         log.warning("Рубрика недоступна для треда %s", thread.root_msg_id)
         rubric, usage = Rubric(), Usage()
 
     novelty, embedding, similarity = await score_novelty(
-        topic.title, rubric.takeaway, recent_embeddings
+        topic.title, rubric.takeaway, [t["embedding"] for t in recent_topics]
     )
+    similarity = max(similarity, title_similarity)
+
+    if similar and rubric.what_new:
+        # повтор с новым содержанием — это уже не повтор
+        similarity = 0.0
+        novelty = max(novelty, 0.7)
 
     result = scoring.compute(
         engagement=engagement_value,
@@ -235,10 +247,16 @@ async def score_topic(
     result.features["raw_signals"] = signals.as_dict()
     result.features["takeaway"] = rubric.takeaway
     result.features["why"] = rubric.why
+    if similar:
+        result.features["similar_to"] = {
+            "title": similar.get("title"),
+            "day": str(similar.get("day", "")),
+        }
+        result.features["what_new"] = rubric.what_new
 
     topic.score = result.score
     topic.kind = rubric.kind
-    topic.takeaway = rubric.takeaway
+    topic.takeaway = rubric.what_new or rubric.takeaway
     topic.why = rubric.why
     topic.features = result.features
     topic.embedding = embedding
@@ -302,7 +320,7 @@ async def build_digest(
     # всё, что нужно скорингу, читаем один раз на весь день
     authors = await repo.list_author_weights()
     history = await repo.signal_history(chat.id, before=day)
-    recent_embeddings = await repo.recent_topic_embeddings(chat.id, before=day)
+    recent_items = await repo.recent_topics(chat.id, before=day)
     examples = await repo.feedback_examples(chat.id)
 
     live = [t for t in threads if not t.low_value]
@@ -333,7 +351,7 @@ async def build_digest(
         result, usage = await score_topic(
             topic, thread, chat,
             signals=signals, peers=peers, history=history,
-            recent_embeddings=recent_embeddings, examples=examples, llm=llm,
+            recent_topics=recent_items, examples=examples, llm=llm,
         )
         total_usage = total_usage + usage
         pairs.append((topic, result))

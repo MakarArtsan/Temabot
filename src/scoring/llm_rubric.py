@@ -33,6 +33,7 @@ class Rubric:
     relevance: float = 0.0
     takeaway: str = ""
     why: str = ""
+    what_new: str = ""      # чем сегодняшнее обсуждение отличается от похожего (§4.7)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,16 +72,28 @@ async def rate_thread(
     chat: Chat,
     *,
     examples: list[dict[str, Any]] | None = None,
+    similar: dict[str, Any] | None = None,
     llm: LLMCall = chat_json,
 ) -> tuple[Rubric, Usage]:
-    """Оценить тред по рубрике. Ошибка модели не роняет дайджест."""
+    """Оценить тред по рубрике. Ошибка модели не роняет дайджест.
+
+    Если тема похожа на недавнюю, в промпт добавляется вопрос «что нового»
+    (TZ §4.7): повтор без нового содержания в дайджест не идёт.
+    """
     settings = chat.settings or {}
     profile = settings.get("interests_profile")
     profile_block = prompts.RUBRIC_PROFILE.format(profile=profile) if profile else ""
 
+    repeat_block = ""
+    if similar:
+        repeat_block = prompts.RUBRIC_REPEAT.format(
+            title=similar.get("title", ""), takeaway=similar.get("takeaway", "")
+        )
+
     user = prompts.RUBRIC_USER.format(
         profile=profile_block,
         examples=format_examples(examples or []),
+        repeat=repeat_block,
         text=thread.text[:MAX_THREAD_CHARS],
     )
 
@@ -109,6 +122,7 @@ async def rate_thread(
             relevance=_clamp(data.get("relevance")),
             takeaway=str(data.get("takeaway") or "").strip(),
             why=str(data.get("why") or "").strip(),
+            what_new=str(data.get("what_new") or "").strip(),
         ),
         usage,
     )

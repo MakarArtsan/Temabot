@@ -80,7 +80,13 @@ class MentionsMe(Filter):
 
 
 def _strip_mention(text: str) -> str:
-    return re.sub(rf"@{re.escape(_bot_username)}\b", "", text, flags=re.I).strip()
+    """Вырезать упоминание вместе с лишним пробелом вокруг него.
+
+    Без схлопывания пробела текст в середине фразы копировался с двойным
+    пробелом на месте упоминания.
+    """
+    cleaned = re.sub(rf"\s*@{re.escape(_bot_username)}\b\s*", " ", text, flags=re.I)
+    return cleaned.strip()
 
 
 async def _make_page(text: str) -> str:
@@ -92,6 +98,28 @@ async def _make_page(text: str) -> str:
         html_content=content,
     )
     return page["url"]
+
+
+async def _send_to_dm(message: types.Message, text: str) -> bool:
+    """Отправить текст в личку запросившему. False, если не получилось."""
+    user = message.from_user
+    if user is None or message.bot is None:
+        return False
+    try:
+        await message.bot.send_message(
+            user.id,
+            f"<code>{html.escape(text)}</code>",
+            parse_mode="HTML",
+            link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+        )
+    except TelegramForbiddenError:
+        await message.reply("Напиши мне в личку /start — пришлю текст туда.")
+        return True
+    except Exception:
+        log.exception("Не удалось отправить текст в личку")
+        return False
+    await message.reply("Отправил текст в личку.")
+    return True
 
 
 @router.message(MentionsMe())
@@ -109,6 +137,13 @@ async def on_mention(message: types.Message) -> None:
             "Напиши текст после упоминания или ответь упоминанием на сообщение."
         )
         return
+
+    if cfg.COPY_MODE == "dm":
+        # Страница Telegraph открывается любым, у кого есть ссылка: содержимое
+        # закрытой группы уходит на внешний сервис. В режиме dm текст идёт в
+        # личку запросившему и наружу не попадает (TZ §4.6).
+        if await _send_to_dm(message, text):
+            return
 
     try:
         url = await _make_page(text)
@@ -134,7 +169,10 @@ async def on_mention(message: types.Message) -> None:
 
     kb = InlineKeyboardBuilder()
     kb.button(text="📄 Копировать текст", url=url)
-    if tracked:
+    # Кнопка работает только у владельца, поэтому и показываем её только ему:
+    # остальным участникам она лишь сообщала бы, что бот следит за чатом.
+    asked_by_owner = message.from_user is not None and message.from_user.id == cfg.OWNER_ID
+    if tracked and asked_by_owner:
         kb.button(
             text="🧵 Что обсуждали вокруг",
             callback_data=AroundCb(

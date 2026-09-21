@@ -1139,14 +1139,18 @@ async def get_digest_item(item_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-async def recent_topic_embeddings(
+async def recent_topics(
     chat_id: int, *, days: int = 7, before: date_type | None = None
-) -> list[list[float]]:
-    """Эмбеддинги тем за последние дни — для проверки новизны (TZ §4.7)."""
+) -> list[dict[str, Any]]:
+    """Темы за последние дни с эмбеддингами — для проверки новизны (TZ §4.7).
+
+    Возвращаем не только вектор, но и заголовок с выводом: если тема окажется
+    повтором, их нужно показать модели в вопросе «что нового».
+    """
     last_day = before or date_type.today()
     rows = await pool.fetch(
         """
-        select i.embedding::text as embedding
+        select i.title, i.features, d.day, i.embedding::text as embedding
           from digest_items i
           join digests d on d.id = i.digest_id
          where i.chat_id = $1
@@ -1159,12 +1163,20 @@ async def recent_topic_embeddings(
         last_day,
         days,
     )
-    result: list[list[float]] = []
+    result: list[dict[str, Any]] = []
     for row in rows:
         raw = row["embedding"]
         if not raw:
             continue
-        result.append([float(x) for x in raw.strip("[]").split(",") if x])
+        features = row["features"] or {}
+        result.append(
+            {
+                "title": row["title"],
+                "takeaway": features.get("takeaway", ""),
+                "day": row["day"],
+                "embedding": [float(x) for x in raw.strip("[]").split(",") if x],
+            }
+        )
     return result
 
 

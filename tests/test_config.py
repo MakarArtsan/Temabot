@@ -131,3 +131,20 @@ def test_all_container_roles_are_valid(
     for role in ("collector", "bot", "web", "migrate"):
         monkeypatch.setenv("APP_ROLE", role)
         assert settings_cls(_env_file=tmp_path / "absent.env").APP_ROLE == role
+
+
+@pytest.mark.parametrize(
+    ("dsn", "expected"),
+    [
+        ("postgresql://u:p@db.abc.supabase.co:5432/postgres", False),
+        ("postgresql://u:p@aws-0-eu-west-2.pooler.supabase.com:5432/postgres", False),
+        ("postgresql://u:p@aws-0-eu-west-2.pooler.supabase.com:6543/postgres", True),
+        ("postgresql://u:p@host:5432/db?pgbouncer=true", True),
+        ("", False),
+    ],
+)
+def test_transaction_pooler_is_detected(dsn: str, expected: bool):
+    """Через пулер на 6543 подготовленные выражения asyncpg ломаются."""
+    from src.db.pool import uses_transaction_pooler
+
+    assert uses_transaction_pooler(dsn) is expected

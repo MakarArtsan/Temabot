@@ -324,3 +324,64 @@ def test_heroes_line_does_not_repeat_one_person():
 
     assert line.count("user101") == 1
     assert "🧠 🛟 🔥 user101" in line
+
+
+# ====================================== публикация в группу за флагом (§4.10)
+
+def test_publication_is_off_by_default():
+    """В закрытой группе рейтинг с именами — новое поведение, нужен явный флаг."""
+    assert ratings_bot.ratings_are_public(Chat(id=1, tg_id=-100)) is False
+    assert ratings_bot.ratings_are_public(Chat(id=1, tg_id=-100, settings={})) is False
+    assert ratings_bot.ratings_are_public(
+        Chat(id=1, tg_id=-100, settings={"ratings": {"publish": False}})
+    ) is False
+
+
+def test_publication_can_be_turned_on():
+    chat = Chat(id=1, tg_id=-100, settings={"ratings": {"publish": True}})
+    assert ratings_bot.ratings_are_public(chat) is True
+
+
+def test_public_text_has_only_positive_nominations():
+    """Наружу идут только те номинации, которыми приятно гордиться (§4.10)."""
+    rows = [
+        row(VASYA, usefulness=0.9, questions_answered=3, night_msgs=10, messages=20,
+            replies_got=20, links=4, reactions_got=7),
+    ]
+    text = ratings_bot.public_ratings_text(rows, "неделя")
+
+    assert "🧠 Самый полезный" in text
+    assert "🛟 Помощник" in text
+    assert "🦉 Сова" not in text, "ночные сообщения — это про человека, не про пользу"
+    assert "🎯 Цепляет" not in text
+    assert "/optout" in text, "участник должен знать, как выйти"
+
+
+async def test_publish_does_nothing_without_the_flag():
+    sent: list[Any] = []
+
+    class FakeBot:
+        async def send_message(self, *a: Any, **kw: Any) -> None:
+            sent.append(a)
+
+    published = await ratings_bot.publish_ratings(
+        FakeBot(), Chat(id=1, tg_id=-100), "week"
+    )
+    assert published is False and sent == []
+
+
+async def test_publish_sends_to_the_group_when_allowed(monkeypatch: pytest.MonkeyPatch):
+    sent: list[dict[str, Any]] = []
+
+    class FakeBot:
+        async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+            sent.append({"chat_id": chat_id, "text": text})
+
+    async def stats(*a: Any, **kw: Any) -> list[dict[str, Any]]:
+        return [row(VASYA, usefulness=0.9, questions_answered=2)]
+
+    monkeypatch.setattr(ratings_bot.repo, "get_author_stats", stats)
+    chat = Chat(id=1, tg_id=-1002354231333, settings={"ratings": {"publish": True}})
+
+    assert await ratings_bot.publish_ratings(FakeBot(), chat, "week") is True
+    assert sent[0]["chat_id"] == -1002354231333, "в саму группу, а не владельцу"

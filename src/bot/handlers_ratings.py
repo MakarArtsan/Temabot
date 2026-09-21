@@ -193,6 +193,74 @@ async def who_ranks(name: str, *, days: int = 30) -> list[str]:
     return lines
 
 
+# Что можно публиковать в группу: только позитивные номинации (TZ §4.10).
+# «Писатель» шуточная, но безобидная; «Сова» и «Цепляет» — про человека, а не
+# про его пользу, поэтому наружу не идут.
+PUBLIC_NOMINATIONS = ("useful", "helper", "starter", "loved", "finder", "radio", "writer")
+
+
+def ratings_are_public(chat: Any) -> bool:
+    """Публикация выключена по умолчанию (TZ §4.10)."""
+    settings = getattr(chat, "settings", None) or {}
+    return bool((settings.get("ratings") or {}).get("publish", False))
+
+
+def public_ratings_text(rows: list[dict[str, Any]], title: str) -> str:
+    """Текст рейтинга для отправки в группу.
+
+    Никаких антиноминаций: наружу идут только те, которыми приятно гордиться.
+    Скрывшихся по /optout в `rows` уже нет — их отфильтровал запрос.
+    """
+    scale = usefulness_scale(rows)
+    lines = [f"<b>Итоги · {esc_html(title)}</b>", ""]
+    for key in PUBLIC_NOMINATIONS:
+        nomination = next((n for n in NOMINATIONS if n.key == key), None)
+        if nomination is None:
+            continue
+        top = top_of(nomination, rows, limit=3)
+        if not top:
+            continue
+        lines.append(f"<b>{nomination.title}</b>")
+        for place, (row, value) in enumerate(top):
+            name = esc_html(str(row.get("name") or row["tg_user_id"]))
+            shown = (
+                f"{scale.get(int(row['tg_user_id']), 0)} из 100"
+                if nomination.key == "useful"
+                else f"{_fmt(value)} {nomination.unit}".strip()
+            )
+            lines.append(f"{MEDALS[place]} {name} — {shown}")
+        lines.append("")
+    lines.append("<i>Не хочешь попадать в рейтинг — напиши мне /optout</i>")
+    return "\n".join(lines).strip()
+
+
+async def publish_ratings(bot: Any, chat: Any, period_key: str = "week") -> bool:
+    """Опубликовать рейтинг в саму группу (TZ §4.10).
+
+    Работает только при явно включённом флаге. По умолчанию рейтинги видит
+    только владелец: в закрытой группе публичный рейтинг с именами — это новое
+    поведение, на которое нужно согласие её админов.
+    """
+    if not ratings_are_public(chat):
+        return False
+
+    period = resolve_period(period_key)
+    rows = await repo.get_author_stats(
+        chat.id, date_from=period.date_from, date_to=period.date_to
+    )
+    if not rows:
+        return False
+
+    try:
+        await bot.send_message(
+            chat.tg_id, public_ratings_text(rows, period.title), parse_mode="HTML"
+        )
+    except Exception:
+        log.exception("Не удалось опубликовать рейтинг в группу %s", chat.tg_id)
+        return False
+    return True
+
+
 def heroes_line(rows: list[dict[str, Any]]) -> str:
     """Строка «🏅 Герои дня» для дайджеста (TZ §4.10).
 

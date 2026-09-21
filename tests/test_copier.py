@@ -41,7 +41,7 @@ def message(text: str, *, mention: str | None = "@temabot", **kw: Any) -> Simple
     entities = mention_entities(text, mention) if mention and mention in text else []
     defaults: dict[str, Any] = dict(
         text=text, caption=None, entities=entities, caption_entities=None,
-        reply_to_message=None, message_id=1,
+        reply_to_message=None, message_id=1, bot=None,
         chat=SimpleNamespace(id=GROUP), from_user=SimpleNamespace(id=OWNER, full_name="Вася"),
         date=NOW,
     )
@@ -94,9 +94,9 @@ async def test_mention_in_caption():
 
 def test_strip_mention_keeps_the_rest():
     assert copier._strip_mention("@temabot скопируй это") == "скопируй это"
-    # упоминание вырезается «как есть»: в середине остаётся двойной пробел.
-    # Это косметика в копируемом тексте, исходный файл ради неё не трогаем.
-    assert copier._strip_mention("👋 @temabot текст") == "👋  текст"
+    # в середине текста упоминание не должно оставлять двойной пробел
+    assert copier._strip_mention("👋 @temabot текст") == "👋 текст"
+    assert copier._strip_mention("до @temabot после") == "до после"
 
 
 # ------------------------------------------------------------ что копируем
@@ -137,6 +137,7 @@ def no_db(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     monkeypatch.setattr(copier.repo, "mark_copied", mark_copied)
     monkeypatch.setattr(copier.cfg, "TG_GROUP_ID", GROUP)
+    monkeypatch.setattr(copier.cfg, "OWNER_ID", OWNER)
     return calls
 
 
@@ -312,3 +313,76 @@ def test_copier_is_public_but_gated_by_access_rules():
     assert "OwnerOnly" not in kinds, "иначе копировщик перестал бы работать в группе"
     assert "CopierAccess" in kinds
     assert "CopierRateLimit" in kinds
+
+
+# ------------------------------------------------ кнопка только владельцу
+
+async def test_thread_button_is_hidden_from_other_members(no_telegraph, no_db):
+    """Кнопка работает только у владельца — остальным её и показывать незачем."""
+    recorder = Recorder()
+    msg = recorder.attach(message(
+        "@temabot текст", from_user=SimpleNamespace(id=STRANGER, full_name="Чужой")
+    ))
+
+    await copier.on_mention(msg)
+
+    buttons = [
+        b.text for row in recorder.replies[0]["reply_markup"].inline_keyboard for b in row
+    ]
+    assert buttons == ["📄 Копировать текст"]
+
+
+async def test_owner_still_sees_the_thread_button(no_telegraph, no_db):
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(message("@temabot текст")))
+
+    buttons = [
+        b.text for row in recorder.replies[0]["reply_markup"].inline_keyboard for b in row
+    ]
+    assert "🧵 Что обсуждали вокруг" in buttons
+
+
+# ------------------------------------------------------------- режим dm
+
+async def test_dm_mode_does_not_touch_telegraph(
+    no_telegraph, no_db, monkeypatch: pytest.MonkeyPatch
+):
+    """Содержимое закрытой группы не должно уходить на внешний сервис (TZ §4.6)."""
+    monkeypatch.setattr(copier.cfg, "COPY_MODE", "dm")
+    sent: list[dict[str, Any]] = []
+
+    class FakeBot:
+        async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+            sent.append({"chat_id": chat_id, "text": text})
+
+    recorder = Recorder()
+    msg = recorder.attach(message("@temabot секретный текст"))
+    msg.bot = FakeBot()
+
+    await copier.on_mention(msg)
+
+    assert no_telegraph == [], "страница не создавалась"
+    assert sent and sent[0]["chat_id"] == OWNER, "текст ушёл в личку запросившему"
+    assert "секретный текст" in sent[0]["text"]
+    assert "личку" in recorder.replies[0]["text"]
+
+
+async def test_dm_mode_falls_back_when_user_never_started_the_bot(
+    no_telegraph, no_db, monkeypatch: pytest.MonkeyPatch
+):
+    from aiogram.exceptions import TelegramForbiddenError
+
+    monkeypatch.setattr(copier.cfg, "COPY_MODE", "dm")
+
+    class ClosedBot:
+        async def send_message(self, *a: Any, **kw: Any) -> None:
+            raise TelegramForbiddenError(method=None, message="bot was blocked")
+
+    recorder = Recorder()
+    msg = recorder.attach(message("@temabot текст"))
+    msg.bot = ClosedBot()
+
+    await copier.on_mention(msg)
+
+    assert no_telegraph == [], "в закрытую личку не отправили и наружу не выложили"
+    assert "/start" in recorder.replies[0]["text"]

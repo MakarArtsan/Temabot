@@ -307,7 +307,7 @@ def no_scoring_db(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(dp.repo, "list_author_weights", author_weights)
     monkeypatch.setattr(dp.repo, "signal_history", empty_history)
-    monkeypatch.setattr(dp.repo, "recent_topic_embeddings", empty_list)
+    monkeypatch.setattr(dp.repo, "recent_topics", empty_list)
     monkeypatch.setattr(dp.repo, "feedback_examples", empty_list)
 
     async def no_embedding(text: str) -> list[float]:

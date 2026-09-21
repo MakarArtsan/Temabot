@@ -133,7 +133,13 @@ async def send_period_report(bot: Any, period_key: str) -> int:
 
 
 async def send_weekly_report(bot: Any) -> int:
-    return await send_period_report(bot, "week")
+    sent = await send_period_report(bot, "week")
+    # и, если владелец это включил, публикация в саму группу (TZ §4.10)
+    from src.bot.handlers_ratings import publish_ratings
+
+    for chat in await repo.list_chats(digest=True):
+        await publish_ratings(bot, chat, "week")
+    return sent
 
 
 async def send_monthly_report(bot: Any) -> int:

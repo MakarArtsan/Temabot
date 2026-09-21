@@ -494,3 +494,60 @@ def test_proposed_weights_are_plain_numbers():
 
     weights = retrain.weights_from_coefficients([np.float64(2.0), np.float64(1.0)] + [0.0] * 4)
     assert all(type(v) is float for v in weights.values())
+
+
+# ============================================ повтор с новым содержанием (§4.7)
+
+async def test_similar_topic_is_found_by_title(monkeypatch: pytest.MonkeyPatch):
+    """Похожесть ищем по заголовку: вывод выдаёт рубрика, а знать надо до неё."""
+    from src.scoring import novelty as novelty_mod
+
+    async def embed(text: str) -> list[float]:
+        return [1.0, 0.0] if "Seedance" in text else [0.0, 1.0]
+
+    monkeypatch.setattr(novelty_mod, "embed_one", embed)
+    recent = [
+        {"title": "Seedance режет ролики", "takeaway": "ужимать до 1920",
+         "embedding": [1.0, 0.0]},
+        {"title": "Про конференцию", "takeaway": "", "embedding": [0.0, 1.0]},
+    ]
+
+    found, score = await novelty_mod.find_similar("Seedance опять режет", recent)
+
+    assert found is not None and found["title"] == "Seedance режет ролики"
+    assert score > 0.9
+
+
+async def test_nothing_similar_returns_none(monkeypatch: pytest.MonkeyPatch):
+    from src.scoring import novelty as novelty_mod
+
+    async def embed(text: str) -> list[float]:
+        return [1.0, 0.0]
+
+    monkeypatch.setattr(novelty_mod, "embed_one", embed)
+
+    found, score = await novelty_mod.find_similar("Тема", [
+        {"title": "Другое", "embedding": [0.0, 1.0]},
+    ])
+    assert found is None and score < 0.85
+
+
+async def test_rubric_asks_what_is_new_for_a_repeat():
+    llm = fake_llm({"kind": "insight", "usefulness": 5, "what_new": "теперь и на 4K"})
+    similar = {"title": "Seedance режет ролики", "takeaway": "ужимать до 1920"}
+
+    rubric, _ = await rate_thread(
+        a_thread(), Chat(id=1, tg_id=-100), similar=similar, llm=llm
+    )
+
+    prompt = llm.calls[0]["messages"][1]["content"]
+    assert "Похожее уже обсуждали недавно" in prompt
+    assert "Seedance режет ролики" in prompt
+    assert rubric.what_new == "теперь и на 4K"
+
+
+async def test_rubric_without_repeat_has_no_extra_block():
+    llm = fake_llm({"kind": "insight", "usefulness": 5})
+    await rate_thread(a_thread(), Chat(id=1, tg_id=-100), llm=llm)
+
+    assert "Похожее уже обсуждали" not in llm.calls[0]["messages"][1]["content"]

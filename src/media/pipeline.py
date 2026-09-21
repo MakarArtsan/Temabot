@@ -27,6 +27,8 @@ log = logging.getLogger(__name__)
 
 # Что имеет смысл расшифровывать
 TRANSCRIBABLE = {"voice", "audio"}
+# Что имеет смысл описывать мультимодальной моделью (TZ §4.1)
+DESCRIBABLE = {"photo"}
 
 
 @dataclass(slots=True)
@@ -61,6 +63,12 @@ class QueueStats:
 
 
 Transcriber = Callable[[str | Path], Awaitable[str]]
+Describer = Callable[..., Awaitable[str]]
+
+
+async def _no_description(path: str | Path, **kw: Any) -> str:
+    """Заглушка: картинки не описываются, если модуль зрения не подключён."""
+    return ""
 
 
 class MediaQueue:
@@ -70,12 +78,14 @@ class MediaQueue:
         self,
         transcriber: Transcriber,
         *,
+        describer: Describer | None = None,
         concurrency: int | None = None,
         maxsize: int | None = None,
         media_dir: Path | None = None,
         keep_files: bool | None = None,
     ) -> None:
         self.transcriber = transcriber
+        self.describer = describer or _no_description
         self.concurrency = concurrency if concurrency is not None else cfg.MEDIA_CONCURRENCY
         self.media_dir = media_dir or cfg.media_dir
         self.keep_files = keep_files if keep_files is not None else cfg.MEDIA_KEEP_FILES
@@ -116,7 +126,10 @@ class MediaQueue:
         потерять расшифровку не смертельно, а вот заблокировать приём сообщений —
         смертельно, ради этого очередь и заводилась.
         """
-        if job.media_type not in TRANSCRIBABLE:
+        if job.media_type not in TRANSCRIBABLE | DESCRIBABLE:
+            self.stats.skipped += 1
+            return False
+        if job.media_type in DESCRIBABLE and not cfg.VISION_ENABLED:
             self.stats.skipped += 1
             return False
         try:
@@ -156,8 +169,12 @@ class MediaQueue:
             raise RuntimeError(f"Telegram не отдал файл сообщения {job.tg_msg_id}")
 
         await repo.set_media_path(job.chat_id, job.tg_msg_id, str(path))
-        # расшифровщик подменяемый, на пробелы полагаться нельзя
-        text = (await self.transcriber(path) or "").strip()
+
+        if job.media_type in DESCRIBABLE:
+            text = (await self.describer(path, chat_id=job.chat_id) or "").strip()
+        else:
+            # расшифровщик подменяемый, на пробелы полагаться нельзя
+            text = (await self.transcriber(path) or "").strip()
 
         if text:
             await repo.set_transcript(job.chat_id, job.tg_msg_id, text)
