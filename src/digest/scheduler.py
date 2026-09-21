@@ -18,6 +18,7 @@ from src.config import cfg
 from src.db import repo
 from src.digest import pipeline as digest_pipeline
 from src.digest.render import DigestData, digest_parts, split_message
+from src.jobs.ratings import recalc_all
 from src.jobs.retrain import retrain_all
 from src.rag.index import index_all
 
@@ -93,6 +94,52 @@ async def send_digest(
     return sent
 
 
+async def send_period_report(bot: Any, period_key: str) -> int:
+    """Автоотчёт по рейтингам владельцу (TZ §4.10)."""
+    from src.bot.handlers_ratings import resolve_period
+    from src.jobs.nominations import NOMINATIONS, top_of, usefulness_scale
+
+    period = resolve_period(period_key)
+    sent = 0
+    for chat in await repo.list_chats(digest=True):
+        rows = await repo.get_author_stats(
+            chat.id, date_from=period.date_from, date_to=period.date_to
+        )
+        if not rows:
+            continue
+        scale = usefulness_scale(rows)
+        lines = [f"<b>Итоги · {period.title} · {chat.title or chat.tg_id}</b>", ""]
+        for nomination in NOMINATIONS:
+            top = top_of(nomination, rows, limit=3)
+            if not top:
+                continue
+            lines.append(f"<b>{nomination.title}</b>")
+            for place, (row, value) in enumerate(top):
+                name = row.get("name") or row["tg_user_id"]
+                shown = (
+                    f"{scale.get(int(row['tg_user_id']), 0)} из 100"
+                    if nomination.key == "useful"
+                    else f"{value:g} {nomination.unit}".strip()
+                )
+                lines.append(f"{'🥇🥈🥉'[place]} {name} — {shown}")
+            lines.append("")
+        try:
+            for chunk in split_message("\n".join(lines).strip()):
+                await bot.send_message(cfg.OWNER_ID, chunk, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            log.exception("Автоотчёт по группе %s не ушёл", chat.tg_id)
+    return sent
+
+
+async def send_weekly_report(bot: Any) -> int:
+    return await send_period_report(bot, "week")
+
+
+async def send_monthly_report(bot: Any) -> int:
+    return await send_period_report(bot, "month")
+
+
 async def heartbeat(bot: Any) -> None:
     """Отметка живости для страницы «Система» в админке (TZ §4.9)."""
     await repo.set_state(
@@ -121,6 +168,31 @@ def build_scheduler(bot: Any, *, digest_time: time | None = None) -> AsyncIOSche
         replace_existing=True,
         coalesce=True,
         max_instances=1,        # индексация может идти дольше часа на большой истории
+    )
+    # рейтинги считаются после дайджеста: формуле полезности нужны его оценки
+    scheduler.add_job(
+        recalc_all,
+        CronTrigger(hour=23, minute=40, timezone=zone),
+        id="ratings",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        send_weekly_report,
+        CronTrigger(day_of_week="sun", hour=23, minute=45, timezone=zone),
+        args=[bot],
+        id="weekly_report",
+        replace_existing=True,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        send_monthly_report,
+        CronTrigger(day=1, hour=0, minute=30, timezone=zone),
+        args=[bot],
+        id="monthly_report",
+        replace_existing=True,
+        coalesce=True,
     )
     scheduler.add_job(
         retrain_all,

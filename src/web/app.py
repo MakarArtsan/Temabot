@@ -421,6 +421,64 @@ async def authors_update(
     return render(request, "_author_row.html", {"author": found[0]})
 
 
+# ---------------------------------------------------------------- рейтинги
+
+@app.get("/ratings", response_class=HTMLResponse)
+async def ratings_page(
+    request: Request, period: str = "week", chat: int | None = None, sort: str = "useful",
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Рейтинги с сортировкой по любой метрике (TZ §4.10)."""
+    from src.bot.handlers_ratings import resolve_period
+    from src.jobs.nominations import BY_KEY, NOMINATIONS, top_of, usefulness_scale
+
+    chats = await repo.list_chats()
+    current = next((c for c in chats if c.id == chat), chats[0] if chats else None)
+    window = resolve_period(period if period in {"day", "week", "month"} else "week")
+
+    rows = await repo.get_author_stats(
+        current.id if current else None,
+        date_from=window.date_from,
+        date_to=window.date_to,
+        hide_optout=False,
+    )
+    scale = usefulness_scale(rows)
+    nomination = BY_KEY.get(sort, BY_KEY["useful"])
+    rows.sort(key=nomination.value, reverse=True)
+
+    return render(
+        request,
+        "ratings.html",
+        {
+            "active": "ratings",
+            "chats": chats,
+            "chat": current,
+            "period": window,
+            "period_key": window.key,
+            "rows": rows,
+            "scale": scale,
+            "nominations": NOMINATIONS,
+            "sort": nomination.key,
+            "tops": {n.key: top_of(n, rows, limit=3) for n in NOMINATIONS},
+        },
+    )
+
+
+@app.post("/ratings/recalc")
+async def ratings_recalc(
+    request: Request, chat_id: int = Form(...), days: int = Form(1),
+    csrf_token: str = Form(""), _: dict = Depends(auth.require_owner),
+) -> Response:
+    auth.check_csrf(request, csrf_token)
+    from src.jobs.ratings import backfill, recalc_all
+
+    if days > 1:
+        await backfill(days)
+    else:
+        await recalc_all()
+    return RedirectResponse("/ratings", status_code=303)
+
+
 # --------------------------------------------------------------------- Q&A
 
 @app.get("/qa", response_class=HTMLResponse)

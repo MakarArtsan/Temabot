@@ -180,9 +180,15 @@ create table if not exists author_stats_daily (
   questions_answered int default 0,  -- закрыл чужой вопрос (по thread_contrib)
   threads_started int default 0,     -- начал тред, прошедший в дайджест
   night_msgs      int default 0,     -- 00:00–06:00 по TZ
+  -- Номинация «💬 Самый активный» считает реплики до двух слов за 0.3 (TZ §4.10),
+  -- поэтому их количество нужно хранить отдельно от общего числа сообщений.
+  short_msgs      int default 0,
   usefulness      real default 0,    -- формула в TZ §4.10
   primary key (chat_id, tg_user_id, day)
 );
+
+-- Колонка появилась после первой версии схемы — добираем на существующих базах.
+alter table author_stats_daily add column if not exists short_msgs int default 0;
 
 create table if not exists state (key text primary key, value jsonb);  -- last_msg_id и пр.
 

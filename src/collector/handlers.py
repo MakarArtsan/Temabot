@@ -83,11 +83,28 @@ def author_display_name(sender: Any) -> str | None:
     return f"@{username}" if username else None
 
 
+def media_duration(message: Any) -> int:
+    """Длительность голосового или кружка в секундах.
+
+    Нужна номинации «🎙 Радиоведущий» (TZ §4.10). В самой таблице сообщений
+    такого поля нет, поэтому кладём в компактный слепок.
+    """
+    document = getattr(message, "document", None)
+    for attribute in getattr(document, "attributes", None) or []:
+        duration = getattr(attribute, "duration", None)
+        if duration:
+            return int(duration)
+    return 0
+
+
 def _raw_snapshot(message: Any) -> dict[str, Any]:
     """Компактный слепок: полный raw раздул бы базу на сотнях тысяч сообщений."""
     snapshot: dict[str, Any] = {}
     if getattr(message, "fwd_from", None):
         snapshot["forwarded"] = True
+    duration = media_duration(message)
+    if duration:
+        snapshot["duration"] = duration
     for attr in ("grouped_id", "views", "post_author"):
         value = getattr(message, attr, None)
         if value:

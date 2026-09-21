@@ -37,7 +37,8 @@ HELP = """\
 /week — сводка за 7 дней
 /search запрос — 10 сообщений со ссылками, без обращения к модели
 /topics — темы за 30 дней
-/who имя — чем занят участник
+/who имя — чем занят участник и его места в рейтингах
+/top [день|неделя|месяц] [#группа] [номинация] — рейтинги участников
 /pin — ответом на сообщение: пометить важным
 /stats — что собрано и сколько потрачено
 
@@ -344,6 +345,10 @@ async def on_who(message: types.Message, command: CommandObject) -> None:
         lines.append(
             "Последнее сообщение: " + fmt_local(found["last_at"], "%d.%m.%Y %H:%M")
         )
+
+    from src.bot.handlers_ratings import who_ranks
+
+    lines += await who_ranks(name)
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 

@@ -7,7 +7,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from src.bot import handlers_admin, handlers_feedback, handlers_qa
+from src.bot import handlers_admin, handlers_feedback, handlers_qa, handlers_ratings
 from src.bot import handlers_copier as copier
 from src.bot.middlewares import CopierAccess, CopierRateLimit, OwnerOnly, RateLimit
 from src.config import cfg
@@ -49,6 +49,9 @@ def build_dispatcher() -> Dispatcher:
     feedback = handlers_feedback.router
     feedback.callback_query.middleware(OwnerOnly())
 
+    # /optout доступен участникам группы, поэтому мидлвари владельца здесь нет
+    ratings = handlers_ratings.router
+
     qa = handlers_qa.router
     qa.message.middleware(OwnerOnly())
     qa.message.middleware(RateLimit())
@@ -58,6 +61,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(copier.router)
     dp.include_router(admin)
     dp.include_router(feedback)
+    dp.include_router(ratings)
     dp.include_router(qa)
     _dispatcher = dp
     return dp

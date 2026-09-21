@@ -30,7 +30,7 @@ digest:
 	$(PY) -m src.digest.pipeline --date $(DATE)
 
 ratings:
-	$(PY) -m src.jobs.ratings --date $(DATE)
+	$(PY) -m src.jobs.ratings $(if $(DATE),--date $(DATE),) $(if $(DAYS),--backfill $(DAYS),)
 
 lint:
 	$(PY) -m ruff check src tests

@@ -437,6 +437,141 @@ async def count_messages(chat_id: int | None = None) -> int:
     return int(value or 0)
 
 
+# ------------------------------------------------------- рейтинги участников (§4.10)
+
+async def save_thread_contributions(
+    chat_id: int, day: date_type, rows: list[dict[str, Any]]
+) -> int:
+    """Вклад участников в треды дня. Перезапись идемпотентна."""
+    if not rows:
+        return 0
+    db = await pool.get_pool()
+    async with db.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "delete from thread_contrib where chat_id = $1 and day = $2", chat_id, day
+        )
+        for row in rows:
+            await conn.execute(
+                """
+                insert into thread_contrib (chat_id, thread_id, tg_user_id, role, day)
+                values ($1, $2, $3, $4, $5)
+                on conflict do nothing
+                """,
+                chat_id,
+                row["thread_id"],
+                row["tg_user_id"],
+                row["role"],
+                day,
+            )
+    return len(rows)
+
+
+async def get_thread_contributions(chat_id: int, day: date_type) -> list[dict[str, Any]]:
+    """Вклад в треды дня вместе со скором темы — он нужен формуле полезности."""
+    rows = await pool.fetch(
+        """
+        select c.thread_id, c.tg_user_id, c.role,
+               coalesce(i.score, 0) as score, coalesce(i.shown, false) as shown
+          from thread_contrib c
+          left join digests d on d.chat_id = c.chat_id and d.day = c.day
+          left join digest_items i on i.digest_id = d.id and i.thread_id = c.thread_id
+         where c.chat_id = $1 and c.day = $2
+        """,
+        chat_id,
+        day,
+    )
+    return [dict(r) for r in rows]
+
+
+async def replace_author_stats(
+    chat_id: int, day: date_type, rows: list[dict[str, Any]]
+) -> int:
+    """Записать дневную статистику. Пересчёт дня заменяет её целиком."""
+    db = await pool.get_pool()
+    async with db.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "delete from author_stats_daily where chat_id = $1 and day = $2", chat_id, day
+        )
+        for row in rows:
+            await conn.execute(
+                """
+                insert into author_stats_daily (
+                    chat_id, tg_user_id, day, messages, short_msgs, words, longest_msg,
+                    voice_sec, links, replies_got, reactions_got, questions_answered,
+                    threads_started, night_msgs, usefulness
+                ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                """,
+                chat_id,
+                row["tg_user_id"],
+                day,
+                row["messages"],
+                row["short_msgs"],
+                row["words"],
+                row["longest_msg"],
+                row["voice_sec"],
+                row["links"],
+                row["replies_got"],
+                row["reactions_got"],
+                row["questions_answered"],
+                row["threads_started"],
+                row["night_msgs"],
+                row["usefulness"],
+            )
+    return len(rows)
+
+
+async def get_author_stats(
+    chat_id: int | None,
+    *,
+    date_from: date_type,
+    date_to: date_type,
+    hide_optout: bool = True,
+) -> list[dict[str, Any]]:
+    """Суммарная статистика за период: неделя и месяц — это сумма по дням (§4.10)."""
+    rows = await pool.fetch(
+        """
+        select s.tg_user_id,
+               coalesce(a.name, s.tg_user_id::text) as name,
+               sum(s.messages)   as messages,
+               sum(s.short_msgs) as short_msgs,
+               sum(s.words)      as words,
+               max(s.longest_msg) as longest_msg,
+               sum(s.voice_sec)  as voice_sec,
+               sum(s.links)      as links,
+               sum(s.replies_got) as replies_got,
+               sum(s.reactions_got) as reactions_got,
+               sum(s.questions_answered) as questions_answered,
+               sum(s.threads_started) as threads_started,
+               sum(s.night_msgs) as night_msgs,
+               sum(s.usefulness) as usefulness
+          from author_stats_daily s
+          left join authors a on a.tg_user_id = s.tg_user_id
+         where ($1::bigint is null or s.chat_id = $1)
+           and s.day >= $2 and s.day <= $3
+           and (not $4 or coalesce(a.hide_from_ratings, false) = false)
+         group by s.tg_user_id, a.name
+        """,
+        chat_id,
+        date_from,
+        date_to,
+        hide_optout,
+    )
+    return [dict(r) for r in rows]
+
+
+async def set_hide_from_ratings(tg_user_id: int, hidden: bool = True) -> bool:
+    """Команда /optout (TZ §4.10)."""
+    result = await pool.execute(
+        """
+        insert into authors (tg_user_id, hide_from_ratings) values ($1, $2)
+        on conflict (tg_user_id) do update set hide_from_ratings = excluded.hide_from_ratings
+        """,
+        tg_user_id,
+        hidden,
+    )
+    return bool(result)
+
+
 # ------------------------------------------------------------- данные для админки
 
 async def messages_per_day(

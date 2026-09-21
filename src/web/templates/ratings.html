@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Рейтинги{% endblock %}
+{% block h1 %}Рейтинги участников{% endblock %}
+{% block content %}
+<div class="card">
+  <form method="get" action="/ratings" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+    <div>
+      <label>Группа</label>
+      <select name="chat" onchange="this.form.submit()">
+        {% for c in chats %}
+          <option value="{{ c.id }}" {{ 'selected' if chat and c.id == chat.id }}>
+            {{ c.title or c.tg_id }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Период</label>
+      <select name="period" onchange="this.form.submit()">
+        {% for key, label in [('day','день'), ('week','неделя'), ('month','месяц')] %}
+          <option value="{{ key }}" {{ 'selected' if period_key == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Сортировка</label>
+      <select name="sort" onchange="this.form.submit()">
+        {% for n in nominations %}
+          <option value="{{ n.key }}" {{ 'selected' if sort == n.key }}>{{ n.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </form>
+  <p class="muted">Период: {{ period.title }} ({{ period.date_from }} — {{ period.date_to }})</p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Номинации</h2>
+  <div class="row">
+    {% for n in nominations %}
+      {% if tops[n.key] %}
+        <div class="card" style="flex:1 1 240px">
+          <strong>{{ n.title }}</strong>
+          {% for row, value in tops[n.key] %}
+            <div>
+              {{ ['🥇','🥈','🥉'][loop.index0] }}
+              {{ row.name or row.tg_user_id }} —
+              {% if n.key == 'useful' %}{{ scale.get(row.tg_user_id, 0) }} из 100
+              {% else %}{{ '%g'|format(value) }} {{ n.unit }}{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Все участники</h2>
+  <table>
+    <tr>
+      <th>Участник</th><th>Полезность</th><th>Сообщений</th><th>Слов</th>
+      <th>Ответов получил</th><th>Реакций</th><th>Тем начал</th><th>Ответил</th>
+      <th>Ссылок</th><th>Голос, мин</th><th>Ночных</th>
+    </tr>
+    {% for row in rows %}
+      <tr>
+        <td>{{ row.name or row.tg_user_id }}</td>
+        <td><strong>{{ scale.get(row.tg_user_id, 0) }}</strong></td>
+        <td>{{ row.messages }}</td>
+        <td>{{ row.words }}</td>
+        <td>{{ row.replies_got }}</td>
+        <td>{{ row.reactions_got }}</td>
+        <td>{{ row.threads_started }}</td>
+        <td>{{ row.questions_answered }}</td>
+        <td>{{ row.links }}</td>
+        <td>{{ (row.voice_sec / 60) | round(1) }}</td>
+        <td>{{ row.night_msgs }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="11" class="muted">За период данных нет.
+        Пересчёт идёт в 23:40, либо запусти вручную ниже.</td></tr>
+    {% endfor %}
+  </table>
+  <p class="muted">Скрытые по /optout здесь показаны, но в бот-рейтинги и в «Героев дня»
+    не попадают. Скрыть участника можно на странице «Участники».</p>
+</div>
+
+<div class="card">
+  <form method="post" action="/ratings/recalc">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="chat_id" value="{{ chat.id if chat else 0 }}">
+    <label>Пересчитать за последние дни</label>
+    <div style="display:flex;gap:8px">
+      <input type="number" name="days" value="1" min="1" max="90" style="max-width:120px">
+      <button type="submit">Пересчитать</button>
+    </div>
+    <p class="muted">Пересчёт идемпотентный — любой день можно перегнать заново.</p>
+  </form>
+</div>
+{% endblock %}

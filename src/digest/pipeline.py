@@ -411,7 +411,46 @@ async def run_for_chat(
         )
         for topic, item_id in zip(result.all_topics, item_ids, strict=False):
             topic.item_id = item_id
+
+        # вклад участников в треды — основа рейтингов (TZ §4.10)
+        await repo.save_thread_contributions(
+            chat.id,
+            day,
+            [
+                {"thread_id": topic.thread_id, "tg_user_id": c["tg_user_id"],
+                 "role": c["role"]}
+                for topic in result.all_topics
+                for c in topic.contributors
+            ],
+        )
+        await _add_heroes(chat, day, result)
     return result
+
+
+async def _add_heroes(chat: Chat, day: date_type, result: DigestResult) -> None:
+    """Дописать строку «Герои дня» (TZ §4.10).
+
+    Статистику считаем прямо здесь: job рейтингов идёт в 23:40, после дайджеста,
+    а герои нужны уже сейчас. Пересчёт идемпотентный, так что job ничего не сломает.
+    """
+    if result.data is None:
+        return
+    try:
+        from src.bot.handlers_ratings import heroes_line
+        from src.jobs.ratings import recalc_day
+
+        await recalc_day(chat, day)
+        rows = await repo.get_author_stats(chat.id, date_from=day, date_to=day)
+        line = heroes_line(rows)
+    except Exception:
+        # без героев дайджест остаётся дайджестом
+        log.warning("Не удалось посчитать героев дня", exc_info=True)
+        return
+
+    if not line:
+        return
+    result.data.heroes = line
+    result.markdown = render(result.data)
 
 
 def _topic_as_item(topic: Topic) -> dict[str, Any]:

@@ -301,7 +301,7 @@ async def test_summary_failure_does_not_crash(monkeypatch: pytest.MonkeyPatch):
 def test_copier_router_goes_first():
     """Иначе перехватчик «любой текст — это вопрос» съел бы упоминания (TZ §4.6)."""
     names = [r.name for r in build_dispatcher().sub_routers]
-    assert names == ["copier", "admin", "feedback", "qa"]
+    assert names == ["copier", "admin", "feedback", "ratings", "qa"]
 
 
 def test_copier_is_public_but_gated_by_access_rules():

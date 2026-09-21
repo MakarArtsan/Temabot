@@ -126,6 +126,7 @@ class DigestData:
     noise_count: int = 0
     busiest_thread: Topic | None = None
     low_value_count: int = 0
+    heroes: str = ""          # строка «🏅 Герои дня» (TZ §4.10)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +141,7 @@ class DigestData:
             "participants": self.participants,
             "noise_count": self.noise_count,
             "low_value_count": self.low_value_count,
+            "heroes": self.heroes,
         }
 
     @classmethod
@@ -158,6 +160,7 @@ class DigestData:
             noise_count=int(data.get("noise_count", 0)),
             busiest_thread=max(topics, key=lambda t: t.msg_count, default=None),
             low_value_count=int(data.get("low_value_count", 0)),
+            heroes=str(data.get("heroes") or ""),
         )
 
 
@@ -297,9 +300,10 @@ def _topic_block(topic: Topic, chat_tg_id: int, *, bold: Any, link: Any, plain: 
 
 
 def _stats_block(data: DigestData, plain: Any) -> list[str]:
+    lines = [plain(data.heroes), ""] if data.heroes else []
     parts = [f"📊 {data.msg_count} сообщений", f"{data.participants} участников"]
     if data.noise_count:
         parts.append(f"{data.noise_count} коротких реплик не в счёт")
     if data.busiest_thread:
         parts.append(f"самый активный тред — «{plain(data.busiest_thread.title)}»")
-    return [", ".join(parts)]
+    return [*lines, ", ".join(parts)]

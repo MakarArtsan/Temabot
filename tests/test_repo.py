@@ -641,3 +641,105 @@ async def test_set_chat_flags_rejects_unknown_copier_mode():
     await repo.get_or_create_chat(-100111, "Группа")
     with pytest.raises(asyncpg.IntegrityConstraintViolationError):
         await repo.set_chat_flags(-100111, copier="maybe")
+
+
+# ------------------------------------------------------- рейтинги (§4.10)
+
+async def test_author_stats_roundtrip_is_idempotent():
+    """Пересчёт дня заменяет статистику, а не накапливает её."""
+    chat_id = await _chat()
+    day = date(2026, 9, 20)
+    row = {
+        "tg_user_id": 1001, "messages": 5, "short_msgs": 1, "words": 40,
+        "longest_msg": 12, "voice_sec": 60, "links": 2, "replies_got": 3,
+        "reactions_got": 4, "questions_answered": 1, "threads_started": 1,
+        "night_msgs": 0, "usefulness": 0.75,
+    }
+    await repo.replace_author_stats(chat_id, day, [row])
+    await repo.replace_author_stats(chat_id, day, [{**row, "messages": 7}])
+
+    stats = await repo.get_author_stats(chat_id, date_from=day, date_to=day)
+    assert len(stats) == 1
+    assert stats[0]["messages"] == 7
+
+
+async def test_week_is_the_sum_of_days():
+    """Неделя и месяц не хранятся отдельно — это сумма по дням (§4.10)."""
+    chat_id = await _chat()
+    for offset in range(3):
+        day = date(2026, 9, 18 + offset)
+        await repo.replace_author_stats(chat_id, day, [{
+            "tg_user_id": 1001, "messages": 5, "short_msgs": 0, "words": 10,
+            "longest_msg": 4, "voice_sec": 30, "links": 1, "replies_got": 1,
+            "reactions_got": 1, "questions_answered": 0, "threads_started": 0,
+            "night_msgs": 0, "usefulness": 0.5,
+        }])
+
+    week = await repo.get_author_stats(
+        chat_id, date_from=date(2026, 9, 18), date_to=date(2026, 9, 20)
+    )
+    assert week[0]["messages"] == 15
+    assert week[0]["voice_sec"] == 90
+    assert float(week[0]["usefulness"]) == pytest.approx(1.5)
+
+
+async def test_optout_hides_from_ratings():
+    """Участник с /optout не появляется ни в одном рейтинге (§4.10)."""
+    chat_id = await _chat()
+    day = date(2026, 9, 20)
+    await repo.upsert_author(1001, "Вася")
+    await repo.upsert_author(2002, "Петя")
+    await repo.replace_author_stats(chat_id, day, [
+        {"tg_user_id": u, "messages": 5, "short_msgs": 0, "words": 10, "longest_msg": 4,
+         "voice_sec": 0, "links": 0, "replies_got": 0, "reactions_got": 0,
+         "questions_answered": 0, "threads_started": 0, "night_msgs": 0,
+         "usefulness": 0.5}
+        for u in (1001, 2002)
+    ])
+
+    await repo.set_hide_from_ratings(2002, True)
+
+    visible = await repo.get_author_stats(chat_id, date_from=day, date_to=day)
+    assert [int(r["tg_user_id"]) for r in visible] == [1001]
+
+    # в админке скрытые всё же видны
+    everyone = await repo.get_author_stats(
+        chat_id, date_from=day, date_to=day, hide_optout=False
+    )
+    assert len(everyone) == 2
+
+    await repo.set_hide_from_ratings(2002, False)
+    assert len(await repo.get_author_stats(chat_id, date_from=day, date_to=day)) == 2
+
+
+async def test_thread_contributions_join_digest_scores():
+    """Формуле полезности нужен скор темы — он приходит из digest_items."""
+    chat_id = await _chat()
+    day = date(2026, 9, 20)
+    digest_id = await repo.save_digest(chat_id, day, "текст", payload={})
+    await repo.save_digest_items(digest_id, chat_id, [
+        {"thread_id": 7, "title": "Тема", "kind": "insight", "score": 0.8, "shown": True,
+         "features": {}},
+    ])
+    await repo.save_thread_contributions(chat_id, day, [
+        {"thread_id": 7, "tg_user_id": 1001, "role": "key"},
+    ])
+
+    rows = await repo.get_thread_contributions(chat_id, day)
+    assert len(rows) == 1
+    assert float(rows[0]["score"]) == pytest.approx(0.8)
+    assert rows[0]["shown"] is True
+
+
+async def test_thread_contributions_are_replaced_not_stacked():
+    chat_id = await _chat()
+    day = date(2026, 9, 20)
+    await repo.save_thread_contributions(chat_id, day, [
+        {"thread_id": 7, "tg_user_id": 1001, "role": "key"},
+    ])
+    await repo.save_thread_contributions(chat_id, day, [
+        {"thread_id": 7, "tg_user_id": 1001, "role": "initiator"},
+    ])
+
+    rows = await repo.get_thread_contributions(chat_id, day)
+    assert [r["role"] for r in rows] == ["initiator"]
