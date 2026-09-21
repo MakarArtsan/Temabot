@@ -1,0 +1,201 @@
+"""Сервис коллектора: подписка на события и докачка пропущенного (TZ §4.1).
+
+Один процесс — одна сессия. Вторая копия с той же сессией даёт
+AUTH_KEY_DUPLICATED и Telegram может сбросить авторизацию (TZ шаг 13).
+"""
+from __future__ import annotations
+
+import asyncio
+import functools
+import logging
+from datetime import UTC, datetime
+from typing import Any
+
+from telethon import events
+
+from src.collector.client import build_client, with_flood_retry
+from src.collector.handlers import AuthorCache, normalize_message
+from src.config import cfg
+from src.db import repo
+from src.db.models import Chat
+
+log = logging.getLogger(__name__)
+
+CATCHUP_BATCH = 200          # порция докачки, как в бэкфилле (TZ шаг 4)
+CATCHUP_PAUSE_SEC = 1.5      # пауза между порциями, чтобы не ловить FloodWait
+HEARTBEAT_SEC = 60           # для страницы «Система» в админке (TZ §4.9)
+HEARTBEAT_KEY = "collector:heartbeat"
+
+
+class Collector:
+    """Сбор сообщений в БД. В dry-run печатает в консоль и не пишет ничего."""
+
+    def __init__(self, client: Any, *, dry_run: bool = False) -> None:
+        self.client = client
+        self.dry_run = dry_run
+        self.authors = AuthorCache()
+        self._chats_by_tg_id: dict[int, Chat] = {}
+        self.saved = 0
+
+    # ------------------------------------------------------------- целевые чаты
+
+    async def load_target_chats(self) -> list[Chat]:
+        """Только чаты с collect = true (TZ §4.8).
+
+        При самом первом запуске таблица пустая: тогда заводим чат из TG_GROUP_ID
+        и включаем сбор — иначе collector стартует вхолостую и ничего не пишет.
+        """
+        chats = await repo.list_chats(collect=True)
+        if not chats and cfg.TG_GROUP_ID:
+            chat = await repo.get_or_create_chat(cfg.TG_GROUP_ID)
+            updated = await repo.set_chat_flags(cfg.TG_GROUP_ID, collect=True)
+            chat = updated or chat
+            log.info("Первый запуск: включил сбор для группы из TG_GROUP_ID (%s)", chat.tg_id)
+            chats = [chat]
+        self._chats_by_tg_id = {c.tg_id: c for c in chats}
+        return chats
+
+    def chat_for(self, chat_tg_id: int) -> Chat | None:
+        return self._chats_by_tg_id.get(chat_tg_id)
+
+    # ------------------------------------------------------------- запись в БД
+
+    async def save(self, message: Any, chat: Chat) -> None:
+        author_name = await self.authors.resolve(message, persist=not self.dry_run)
+        row = normalize_message(message, chat.id, author_name=author_name)
+
+        if self.dry_run:
+            preview = (row.text or "")[:80].replace("\n", " ")
+            print(
+                f"[dry-run] {row.date:%Y-%m-%d %H:%M} #{row.tg_msg_id} "
+                f"{author_name or row.tg_user_id}: {preview}"
+                + (f" [{row.media_type}]" if row.media_type else "")
+            )
+            self.saved += 1
+            return
+
+        await repo.upsert_message(row)
+        self.saved += 1
+
+    # ---------------------------------------------------------------- события
+
+    async def on_new_message(self, event: Any) -> None:
+        chat = self.chat_for(event.chat_id)
+        if chat is None:
+            return
+        try:
+            await self.save(event.message, chat)
+        except Exception:
+            log.exception("Не удалось сохранить сообщение %s", getattr(event, "id", "?"))
+
+    async def on_message_edited(self, event: Any) -> None:
+        chat = self.chat_for(event.chat_id)
+        if chat is None or self.dry_run:
+            return
+        message = event.message
+        await repo.update_message_text(
+            chat.id,
+            int(message.id),
+            getattr(message, "message", None) or None,
+            getattr(message, "edit_date", None),
+        )
+
+    async def on_message_deleted(self, event: Any) -> None:
+        """Мягкое удаление: дайджест за день должен остаться честным (TZ §4.1)."""
+        chat = self.chat_for(event.chat_id) if event.chat_id else None
+        ids = [int(i) for i in (event.deleted_ids or [])]
+        if not ids or self.dry_run:
+            return
+        if chat is not None:
+            await repo.soft_delete_messages(chat.id, ids)
+            return
+        # DeletedMessage в личных чатах приходит без chat_id — чистим по всем целевым
+        for target in self._chats_by_tg_id.values():
+            await repo.soft_delete_messages(target.id, ids)
+
+    # ------------------------------------------------------------- докачка
+
+    async def catch_up(self, chat: Chat) -> int:
+        """Дочитать пропущенное за время простоя (TZ §4.1).
+
+        Опорная точка — максимальный tg_msg_id в БД: он не расходится с
+        реальностью, даже если процесс упал, не успев обновить state.
+        """
+        last_id = await repo.get_last_tg_msg_id(chat.id)
+        if not last_id:
+            log.info("Чат %s пуст — докачка пропущена, запусти backfill (шаг 4)", chat.tg_id)
+            return 0
+
+        fetched = 0
+        batch: list[Any] = []
+        iterator = self.client.iter_messages(chat.tg_id, min_id=last_id, reverse=True)
+        async for message in iterator:
+            batch.append(message)
+            if len(batch) >= CATCHUP_BATCH:
+                fetched += await self._save_batch(batch, chat)
+                batch = []
+                await asyncio.sleep(CATCHUP_PAUSE_SEC)
+        if batch:
+            fetched += await self._save_batch(batch, chat)
+
+        if fetched:
+            log.info("Докачано %s сообщений в чате %s (после #%s)", fetched, chat.tg_id, last_id)
+        return fetched
+
+    async def _save_batch(self, batch: list[Any], chat: Chat) -> int:
+        saved = 0
+        for message in batch:
+            try:
+                await self.save(message, chat)
+                saved += 1
+            except Exception:
+                log.exception("Пропускаю сообщение %s", getattr(message, "id", "?"))
+        return saved
+
+    # ------------------------------------------------------------- heartbeat
+
+    async def heartbeat_loop(self, interval: int = HEARTBEAT_SEC) -> None:
+        while True:
+            if not self.dry_run:
+                await repo.set_state(
+                    HEARTBEAT_KEY,
+                    {"at": datetime.now(UTC).isoformat(), "saved": self.saved},
+                )
+            await asyncio.sleep(interval)
+
+
+def register_handlers(collector: Collector, chat_ids: list[int]) -> None:
+    client = collector.client
+    client.add_event_handler(collector.on_new_message, events.NewMessage(chats=chat_ids))
+    client.add_event_handler(collector.on_message_edited, events.MessageEdited(chats=chat_ids))
+    client.add_event_handler(collector.on_message_deleted, events.MessageDeleted())
+
+
+async def run(*, dry_run: bool = False) -> None:
+    client = build_client()
+    collector = Collector(client, dry_run=dry_run)
+
+    await with_flood_retry(lambda: client.start(), description="подключение к Telegram")
+    me = await client.get_me()
+    log.info("Вошли как %s (id=%s)", getattr(me, "username", None) or me.id, me.id)
+
+    chats = await collector.load_target_chats()
+    if not chats:
+        raise SystemExit(
+            "Нет ни одной группы с collect=true. Укажи TG_GROUP_ID в .env "
+            "или включи группу в админке."
+        )
+    log.info("Слушаю чаты: %s", [c.tg_id for c in chats])
+
+    for chat in chats:
+        await with_flood_retry(
+            functools.partial(collector.catch_up, chat),
+            description=f"докачка чата {chat.tg_id}",
+        )
+
+    register_handlers(collector, [c.tg_id for c in chats])
+    heartbeat = asyncio.create_task(collector.heartbeat_loop())
+    try:
+        await client.run_until_disconnected()
+    finally:
+        heartbeat.cancel()
