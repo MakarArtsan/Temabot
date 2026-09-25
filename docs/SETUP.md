@@ -25,7 +25,7 @@ OWNER_ID=132036441
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-flash
 LLM_REASONING_EFFORT=
-TZ=Asia/Kamchatka
+TZ=Europe/Moscow
 ```
 
 ## Что нужно получить

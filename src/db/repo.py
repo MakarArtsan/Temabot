@@ -53,6 +53,29 @@ async def get_or_create_chat(chat_tg_id: int, title: str | None = None) -> Chat:
     return Chat.from_row(row)
 
 
+async def bootstrap_primary_chat(chat_tg_id: int) -> Chat:
+    """Основная группа из TG_GROUP_ID: при первом запуске сразу рабочая.
+
+    Сбор, дайджест и копировщик включаются только если строки ещё нет —
+    иначе рестарт затирал бы то, что владелец выключил в админке. Без этого
+    бот после деплоя молчал бы в группе, где копировщик уже работал.
+    """
+    row = await pool.fetchrow(
+        """
+        insert into chats (tg_id, collect, digest, copier)
+        values ($1, true, true, 'allow')
+        on conflict (tg_id) do nothing
+        returning *
+        """,
+        chat_tg_id,
+    )
+    if row is not None:
+        return Chat.from_row(row)
+    chat = await get_chat_by_tg_id(chat_tg_id)
+    assert chat is not None
+    return chat
+
+
 async def list_chats(*, collect: bool | None = None, digest: bool | None = None) -> list[Chat]:
     rows = await pool.fetch(
         """
@@ -973,6 +996,25 @@ async def get_unindexed_threads(chat_id: int, limit: int = 200) -> list[int]:
          where m.chat_id = $1 and m.thread_id is not null and m.deleted_at is null
          group by m.thread_id
         having count(c.id) = 0 or max(m.date) > max(coalesce(c.date_to, 'epoch'::timestamptz))
+         limit $2
+        """,
+        chat_id,
+        limit,
+    )
+    return [int(r["thread_id"]) for r in rows]
+
+
+async def get_threads_without_embeddings(chat_id: int, limit: int = 200) -> list[int]:
+    """Треды, проиндексированные без векторов (эмбеддинги были недоступны).
+
+    Их чанки уже находятся полнотекстовым поиском; когда эмбеддинги появятся,
+    индексатор дошьёт векторы, не трогая остальной индекс.
+    """
+    rows = await pool.fetch(
+        """
+        select distinct thread_id from chunks
+         where chat_id = $1 and embedding is null
+         order by thread_id
          limit $2
         """,
         chat_id,

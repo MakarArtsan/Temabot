@@ -19,7 +19,7 @@ def test_defaults_without_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, s
         monkeypatch.delenv(key, raising=False)
     cfg = settings_cls(_env_file=tmp_path / "absent.env")
 
-    assert cfg.TZ == "Asia/Kamchatka"
+    assert cfg.TZ == "Europe/Moscow"
     assert cfg.LLM_MODEL == "deepseek-flash"
     assert cfg.EMBED_BACKEND == "local"
     assert cfg.EMBED_DIM == 1024

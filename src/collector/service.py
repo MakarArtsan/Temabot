@@ -50,16 +50,13 @@ class Collector:
     async def load_target_chats(self) -> list[Chat]:
         """Только чаты с collect = true (TZ §4.8).
 
-        При самом первом запуске таблица пустая: тогда заводим чат из TG_GROUP_ID
-        и включаем сбор — иначе collector стартует вхолостую и ничего не пишет.
+        Группа из TG_GROUP_ID при первом запуске заводится сразу рабочей
+        (сбор, дайджест, копировщик) — иначе collector стартовал бы вхолостую.
+        Если строка уже есть, её флаги не трогаем: их меняет владелец в админке.
         """
+        if cfg.TG_GROUP_ID:
+            await repo.bootstrap_primary_chat(cfg.TG_GROUP_ID)
         chats = await repo.list_chats(collect=True)
-        if not chats and cfg.TG_GROUP_ID:
-            chat = await repo.get_or_create_chat(cfg.TG_GROUP_ID)
-            updated = await repo.set_chat_flags(cfg.TG_GROUP_ID, collect=True)
-            chat = updated or chat
-            log.info("Первый запуск: включил сбор для группы из TG_GROUP_ID (%s)", chat.tg_id)
-            chats = [chat]
         self._chats_by_tg_id = {c.tg_id: c for c in chats}
         return chats
 
@@ -143,7 +140,7 @@ class Collector:
         """
         last_id = await repo.get_last_tg_msg_id(chat.id)
         if not last_id:
-            log.info("Чат %s пуст — докачка пропущена, запусти backfill (шаг 4)", chat.tg_id)
+            log.info("Чат %s пуст — докачка пропущена (история: BACKFILL_DAYS)", chat.tg_id)
             return 0
 
         fetched = 0
@@ -244,30 +241,67 @@ async def requeue_pending_media(collector: Collector, chat: Chat, limit: int = 2
     return queued
 
 
+async def connect(client: Any) -> None:
+    """Подключиться и убедиться, что сессия живая.
+
+    `client.start()` при недействительной сессии спрашивает телефон через
+    input(): на сервере это падение с EOFError и непонятной ошибкой в логе.
+    """
+    await with_flood_retry(client.connect, description="подключение к Telegram")
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise SystemExit(
+            "Сессия Telegram недействительна или не задана. Сгенерируй новую "
+            "строку (make login / docs/SETUP.md) и положи её в TG_SESSION_STRING."
+        )
+
+
+async def auto_backfill(collector: Collector, chat: Chat, days: int) -> None:
+    """Разовая заливка истории при первом старте (TZ §4.1, шаг 4).
+
+    Прогресс хранится в state, поэтому после рестарта заливка продолжается,
+    а пройденный чат повторно не читается. Ошибка не валит collector:
+    сбор новых сообщений важнее старой истории.
+    """
+    from src.collector.backfill import backfill_chat
+
+    if days <= 0 or collector.dry_run:
+        return
+    try:
+        result = await backfill_chat(collector, chat, days=days)
+    except Exception:
+        log.exception("Заливка истории чата %s прервалась, продолжу при рестарте", chat.tg_id)
+        return
+    if result.batches:
+        log.info("Заливка истории за %s дн.: %s", days, result.describe())
+
+
 async def run(*, dry_run: bool = False) -> None:
     client = build_client()
     media = build_media_queue(dry_run=dry_run)
     collector = Collector(client, dry_run=dry_run, media=media)
 
-    await with_flood_retry(lambda: client.start(), description="подключение к Telegram")
+    await connect(client)
     me = await client.get_me()
     log.info("Вошли как %s (id=%s)", getattr(me, "username", None) or me.id, me.id)
 
     chats = await collector.load_target_chats()
     if not chats:
         raise SystemExit(
-            "Нет ни одной группы с collect=true. Укажи TG_GROUP_ID в .env "
+            "Нет ни одной группы с collect=true. Укажи TG_GROUP_ID "
             "или включи группу в админке."
         )
     log.info("Слушаю чаты: %s", [c.tg_id for c in chats])
 
+    # очередь медиа нужна уже во время заливки: голосовые из истории тоже расшифруем
+    await media.start()
     for chat in chats:
+        await auto_backfill(collector, chat, cfg.BACKFILL_DAYS)
         await with_flood_retry(
             functools.partial(collector.catch_up, chat),
             description=f"докачка чата {chat.tg_id}",
         )
 
-    await media.start()
     for chat in chats:
         await requeue_pending_media(collector, chat)
 

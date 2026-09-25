@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     TG_SESSION: str = "./data/collector.session"
     TG_SESSION_STRING: str = ""  # StringSession для деплоя, файл .session не нужен
     TG_GROUP_ID: int = 0  # только для первого запуска, дальше группы из БД
+    # collector при первом старте сам заливает историю за столько дней; 0 — не заливать
+    BACKFILL_DAYS: int = 7
     BOT_TOKEN: str = ""
     OWNER_ID: int = 0
     TELEGRAPH_TOKEN: str = ""
@@ -94,7 +96,7 @@ class Settings(BaseSettings):
 
     # --- Сеть / прочее ---
     PROXY_URL: str = ""
-    TZ: str = "Asia/Kamchatka"
+    TZ: str = "Europe/Moscow"  # сутки дайджеста и время рассылок
     DATA_DIR: Path = ROOT / "data"
     LOG_LEVEL: str = "INFO"
     APP_ROLE: AppRole = "bot"

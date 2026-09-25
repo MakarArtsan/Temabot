@@ -232,7 +232,7 @@ def test_scheduler_uses_kamchatka_and_half_past_eleven():
     scheduler = sched.build_scheduler(bot=object())
     job = scheduler.get_job("daily_digest")
 
-    assert str(job.trigger.timezone) == "Asia/Kamchatka"
+    assert str(job.trigger.timezone) == "Europe/Moscow"
     fields = {f.name: str(f) for f in job.trigger.fields}
     assert fields["hour"] == "23" and fields["minute"] == "30"
 
@@ -306,7 +306,7 @@ async def test_run_records_last_run_state(monkeypatch: pytest.MonkeyPatch):
 
 def test_local_today_follows_configured_timezone():
     """В 23:30 по Камчатке в UTC ещё позавчерашний день."""
-    assert sched.local_today() == datetime.now(ZoneInfo("Asia/Kamchatka")).date()
+    assert sched.local_today() == datetime.now(ZoneInfo("Europe/Moscow")).date()
 
 
 # -------------------------------------------------------------- диспетчер

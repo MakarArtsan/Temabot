@@ -56,12 +56,12 @@ make run-web             # админка
 
 ### Переменные окружения по проектам
 
-Общие для всех трёх: `DATABASE_URL`, `OWNER_ID`, `TZ=Asia/Kamchatka`,
+Общие для всех трёх: `DATABASE_URL`, `OWNER_ID`, `TZ=Europe/Moscow` (можно не задавать — это значение по умолчанию),
 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_THINKING=disabled`.
 
 | Проект | Дополнительно |
 |---|---|
-| `tgd-collector` | `APP_ROLE=collector`, `TG_API_ID`, `TG_API_HASH`, `TG_SESSION_STRING`, `WHISPER_MODEL`, `ASR_ENABLED` |
+| `tgd-collector` | `APP_ROLE=collector`, `TG_API_ID`, `TG_API_HASH`, `TG_SESSION_STRING`, `TG_GROUP_ID`, `ASR_PROVIDER=telegram`, `BACKFILL_DAYS=7` |
 | `tgd-bot` | `APP_ROLE=bot`, `BOT_TOKEN`, `TELEGRAPH_TOKEN`, `TG_GROUP_ID` |
 | `tgd-web` | `APP_ROLE=web`, `BOT_TOKEN`, `BOT_USERNAME`, `WEB_SECRET_KEY`, `WEB_BASE_URL` |
 
@@ -71,16 +71,22 @@ make run-web             # админка
 
 1. Задать переменные во всех трёх проектах.
 2. Задеплоить `tgd-bot` — он накатит схему при старте.
-3. Задеплоить `tgd-web`, открыть админку, включить нужную группу на странице
-   «Группы» (новые группы появляются выключенными).
-4. Задеплоить `tgd-collector`.
-5. Залить историю: `python -m src.collector.backfill --days 30` (разово).
+3. Задеплоить `tgd-web`. Группа из `TG_GROUP_ID` уже включена (сбор, дайджест,
+   копировщик); остальные группы появляются выключенными — их включают на
+   странице «Группы».
+4. Задеплоить `tgd-collector`. При первом старте он сам зальёт историю за
+   `BACKFILL_DAYS` дней (по умолчанию 7) и дальше будет только дописывать новое.
+   Прогресс хранится в БД: рестарт посреди заливки продолжит с того же места.
+   Залить больше позже — поставить `BACKFILL_DAYS=30` и вручную
+   `python -m src.collector.backfill --days 30 --restart`; `BACKFILL_DAYS=0` —
+   не заливать историю вовсе.
 
 ### Что проверить сразу после деплоя
 
 | Проверка | Как |
 |---|---|
-| Коллектор подключился к Telegram | в логах `Вошли как …`; если подключения нет — MTProto не проходит, см. ниже |
+| Коллектор подключился к Telegram | в логах `Вошли как …`; «Сессия Telegram недействительна» — перегенерировать `TG_SESSION_STRING`; нет подключения вовсе — MTProto не проходит, см. ниже |
+| История залилась | в логах `Заливка истории за 7 дн.: …` |
 | Схема накатилась | `/system` в админке, отметка `schema_applied_at` |
 | Сообщения идут | `/stats` в личке бота, растёт счётчик |
 | Голосовые расшифровываются | `/stats`, поле «расшифровано» |

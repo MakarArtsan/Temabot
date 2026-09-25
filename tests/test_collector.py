@@ -395,3 +395,101 @@ async def test_events_from_foreign_chats_are_ignored():
     assert collector.saved == 0
     assert collector.chat_for(-100999) is None
     assert collector.chat_for(-1001234567890) is not None
+
+
+# ----------------------------------------------------------- запуск на сервере
+
+class SessionClient:
+    def __init__(self, authorized: bool) -> None:
+        self.authorized = authorized
+        self.disconnected = False
+
+    async def connect(self) -> None:
+        return None
+
+    async def is_user_authorized(self) -> bool:
+        return self.authorized
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
+async def test_dead_session_stops_with_clear_message_instead_of_asking_phone():
+    """На сервере нет клавиатуры: client.start() упал бы на input() с EOFError."""
+    from src.collector.service import connect
+
+    client = SessionClient(authorized=False)
+    with pytest.raises(SystemExit, match="TG_SESSION_STRING"):
+        await connect(client)
+    assert client.disconnected
+
+
+async def test_live_session_connects():
+    from src.collector.service import connect
+
+    await connect(SessionClient(authorized=True))
+
+
+async def test_auto_backfill_runs_with_configured_days(monkeypatch: pytest.MonkeyPatch):
+    from src.collector import backfill
+    from src.collector.service import auto_backfill
+
+    seen: list[int] = []
+
+    async def fake_backfill(collector: Any, chat: Chat, *, days: int) -> Any:
+        seen.append(days)
+        return backfill.BackfillResult(chat_tg_id=chat.tg_id, batches=1, done=True)
+
+    monkeypatch.setattr(backfill, "backfill_chat", fake_backfill)
+    await auto_backfill(Collector(FakeClient([])), _chat(), 7)
+
+    assert seen == [7]
+
+
+@pytest.mark.parametrize("days, dry_run", [(0, False), (7, True)])
+async def test_auto_backfill_can_be_switched_off(
+    monkeypatch: pytest.MonkeyPatch, days: int, dry_run: bool
+):
+    from src.collector import backfill
+    from src.collector.service import auto_backfill
+
+    async def explode(*a: Any, **kw: Any) -> Any:
+        raise AssertionError("заливка не должна запускаться")
+
+    monkeypatch.setattr(backfill, "backfill_chat", explode)
+    await auto_backfill(Collector(FakeClient([]), dry_run=dry_run), _chat(), days)
+
+
+async def test_auto_backfill_failure_does_not_stop_collector(monkeypatch: pytest.MonkeyPatch):
+    """Старая история не важнее новых сообщений: ошибка заливки не валит процесс."""
+    from src.collector import backfill
+    from src.collector.service import auto_backfill
+
+    async def broken(*a: Any, **kw: Any) -> Any:
+        raise RuntimeError("сеть упала")
+
+    monkeypatch.setattr(backfill, "backfill_chat", broken)
+    await auto_backfill(Collector(FakeClient([])), _chat(), 7)
+
+
+async def test_primary_group_is_bootstrapped_on_every_start(monkeypatch: pytest.MonkeyPatch):
+    from src.collector import service
+    from src.db import repo
+
+    boot: list[int] = []
+
+    async def bootstrap(tg_id: int) -> Chat:
+        boot.append(tg_id)
+        return _chat()
+
+    async def list_chats(**kw: Any) -> list[Chat]:
+        return [_chat()]
+
+    monkeypatch.setattr(repo, "bootstrap_primary_chat", bootstrap)
+    monkeypatch.setattr(repo, "list_chats", list_chats)
+    monkeypatch.setattr(service.cfg, "TG_GROUP_ID", -1001234567890)
+
+    chats = await Collector(FakeClient([])).load_target_chats()
+
+    assert boot == [-1001234567890]
+    assert [c.tg_id for c in chats] == [-1001234567890]

@@ -11,7 +11,7 @@ from src.bot import handlers_admin, handlers_feedback, handlers_qa, handlers_rat
 from src.bot import handlers_copier as copier
 from src.bot.middlewares import CopierAccess, CopierRateLimit, OwnerOnly, RateLimit
 from src.config import cfg
-from src.db import pool
+from src.db import pool, repo
 from src.db.migrate import apply_schema
 from src.digest.scheduler import build_scheduler
 
@@ -75,6 +75,9 @@ async def run() -> None:
 
     if cfg.DATABASE_URL:
         await apply_schema(cfg.DATABASE_URL)
+        if cfg.TG_GROUP_ID:
+            # копировщик в основной группе должен работать сразу после деплоя
+            await repo.bootstrap_primary_chat(cfg.TG_GROUP_ID)
 
     bot = Bot(cfg.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = build_dispatcher()

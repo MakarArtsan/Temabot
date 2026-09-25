@@ -743,3 +743,88 @@ async def test_thread_contributions_are_replaced_not_stacked():
 
     rows = await repo.get_thread_contributions(chat_id, day)
     assert [r["role"] for r in rows] == ["initiator"]
+
+
+# ------------------------------------------------------ первый запуск и индекс
+
+async def test_bootstrap_primary_chat_turns_everything_on_for_a_new_group():
+    """После деплоя копировщик в основной группе не должен замолчать."""
+    chat = await repo.bootstrap_primary_chat(-100555)
+
+    assert chat.collect and chat.digest and chat.copier == "allow"
+
+
+async def test_bootstrap_primary_chat_keeps_owner_choices():
+    """Рестарт не должен включать обратно то, что владелец выключил в админке."""
+    await repo.bootstrap_primary_chat(-100555)
+    await repo.set_chat_flags(-100555, digest=False, copier="deny")
+
+    chat = await repo.bootstrap_primary_chat(-100555)
+
+    assert chat.collect and not chat.digest and chat.copier == "deny"
+
+
+async def test_threads_without_embeddings():
+    chat_id = await _chat()
+    await repo.replace_chunks(chat_id, 1, [{"msg_ids": [1], "text": "а", "embedding": None}])
+    await repo.replace_chunks(chat_id, 2, [{"msg_ids": [2], "text": "б", "embedding": _vec(2)}])
+
+    assert await repo.get_threads_without_embeddings(chat_id) == [1]
+
+
+async def _indexable_chat() -> tuple[object, int]:
+    chat = await repo.get_or_create_chat(-100777, "Группа")
+    kam = ZoneInfo(KAMCHATKA)
+    await repo.upsert_message(_msg(
+        chat.id, 1, text="сколько стоит генерация ролика?",
+        date=datetime(2026, 9, 20, 12, tzinfo=kam),
+    ))
+    await repo.upsert_message(_msg(
+        chat.id, 2, text="примерно 12 рублей за ролик", reply_to=1,
+        date=datetime(2026, 9, 20, 12, 1, tzinfo=kam),
+    ))
+    return chat, chat.id
+
+
+async def test_index_without_embeddings_still_feeds_text_search(monkeypatch):
+    """В образе нет sentence-transformers — /ask всё равно должен находить историю."""
+    from src.rag import index as rag_index
+
+    async def broken(texts, **kw):
+        raise RuntimeError("Не установлен sentence-transformers")
+
+    monkeypatch.setattr(rag_index, "embed_texts", broken)
+    chat, chat_id = await _indexable_chat()
+
+    result = await rag_index.index_chat(chat)
+
+    assert result.chunks >= 1 and result.without_vectors == result.threads
+    found = await repo.search_chunks_by_text("сколько стоит ролик")
+    assert found, "без векторов чанки должны попасть в полнотекстовый поиск"
+    assert await repo.get_unindexed_threads(chat_id) == [], "повторно не индексируем"
+
+
+async def test_vectors_are_added_when_embeddings_come_back(monkeypatch):
+    from src.db import pool
+    from src.rag import index as rag_index
+
+    async def broken(texts, **kw):
+        raise RuntimeError("нет модели")
+
+    calls: list[int] = []
+
+    async def working(texts, **kw):
+        calls.append(len(texts))
+        return [[0.1] * 1024 for _ in texts]
+
+    chat, chat_id = await _indexable_chat()
+    monkeypatch.setattr(rag_index, "embed_texts", broken)
+    await rag_index.index_chat(chat)
+
+    monkeypatch.setattr(rag_index, "embed_texts", working)
+    result = await rag_index.index_chat(chat)
+
+    assert calls and result.without_vectors == 0
+    missing = await pool.fetchval("select count(*) from chunks where embedding is null")
+    assert missing == 0
+    assert await repo.get_threads_without_embeddings(chat_id) == []

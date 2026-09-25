@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.collector.client import build_client, with_flood_retry
-from src.collector.service import Collector
+from src.collector.service import Collector, connect
 from src.config import cfg
 from src.db import pool, repo
 from src.db.models import Chat
@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 BATCH_SIZE = 200
 PAUSE_SEC = 1.5
-DEFAULT_DAYS = 30
+DEFAULT_DAYS = 7
 
 
 def state_key(chat_tg_id: int) -> str:
@@ -154,7 +154,7 @@ async def run(
     client = build_client()
     collector = Collector(client, dry_run=dry_run)
 
-    await with_flood_retry(lambda: client.start(), description="подключение к Telegram")
+    await connect(client)
     chats = await collector.load_target_chats()
     if chat_tg_id is not None:
         chats = [c for c in chats if c.tg_id == chat_tg_id]
