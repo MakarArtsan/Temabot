@@ -96,13 +96,15 @@ async def set_chat_flags(
     collect: bool | None = None,
     digest: bool | None = None,
     copier: str | None = None,
+    publish: str | None = None,
 ) -> Chat | None:
     row = await pool.fetchrow(
         """
         update chats
            set collect = coalesce($2, collect),
                digest  = coalesce($3, digest),
-               copier  = coalesce($4, copier)
+               copier  = coalesce($4, copier),
+               publish = coalesce($5, publish)
          where tg_id = $1
         returning *
         """,
@@ -110,6 +112,7 @@ async def set_chat_flags(
         collect,
         digest,
         copier,
+        publish,
     )
     return Chat.from_row(row) if row else None
 
@@ -653,7 +656,8 @@ async def list_recent_digests(limit: int = 30) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
         select d.id, d.chat_id, d.day, d.msg_count, d.tokens_used, d.created_at,
-               c.title, c.tg_id,
+               d.published_at, d.published_msg_ids,
+               c.title, c.tg_id, c.publish,
                (select count(*) from digest_items i where i.digest_id = d.id and i.shown) as shown,
                (select count(*) from digest_items i where i.digest_id = d.id and not i.shown)
                    as missed
@@ -784,6 +788,41 @@ async def get_digest(chat_id: int, day: date_type) -> Digest | None:
         "select * from digests where chat_id = $1 and day = $2", chat_id, day
     )
     return Digest.from_row(row) if row else None
+
+
+async def get_digest_by_id(digest_id: int) -> Digest | None:
+    row = await pool.fetchrow("select * from digests where id = $1", digest_id)
+    return Digest.from_row(row) if row else None
+
+
+async def claim_digest_publication(digest_id: int) -> bool:
+    """Занять публикацию до отправки: кнопка и автопубликация не выложат дважды.
+
+    Отметка ставится атомарно, поэтому из двух одновременных попыток пройдёт одна.
+    """
+    claimed = await pool.fetchval(
+        """
+        update digests set published_at = now(), published_msg_ids = null
+         where id = $1 and published_at is null
+        returning id
+        """,
+        digest_id,
+    )
+    return claimed is not None
+
+
+async def finish_digest_publication(digest_id: int, msg_ids: list[int]) -> None:
+    await pool.execute(
+        "update digests set published_msg_ids = $2 where id = $1", digest_id, msg_ids
+    )
+
+
+async def release_digest_publication(digest_id: int) -> None:
+    """Снять отметку: отправка не удалась или пост убрали из группы."""
+    await pool.execute(
+        "update digests set published_at = null, published_msg_ids = null where id = $1",
+        digest_id,
+    )
 
 
 async def list_digests(chat_id: int, days: int = 7, until: date_type | None = None) -> list[Digest]:

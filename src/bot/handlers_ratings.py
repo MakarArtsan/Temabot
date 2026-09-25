@@ -253,7 +253,10 @@ async def publish_ratings(bot: Any, chat: Any, period_key: str = "week") -> bool
 
     try:
         await bot.send_message(
-            chat.tg_id, public_ratings_text(rows, period.title), parse_mode="HTML"
+            chat.tg_id,
+            public_ratings_text(rows, period.title),
+            parse_mode="HTML",
+            disable_notification=True,  # воскресенье, 23:45 — без звука
         )
     except Exception:
         log.exception("Не удалось опубликовать рейтинг в группу %s", chat.tg_id)

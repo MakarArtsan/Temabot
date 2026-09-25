@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import date as date_type
 from datetime import datetime, timedelta
@@ -20,6 +20,15 @@ from fastapi.templating import Jinja2Templates
 
 from src.config import cfg
 from src.db import pool, repo
+from src.digest.publish import (
+    PUBLISH_LABELS,
+    PUBLISH_MODES,
+    PublishResult,
+    group_preview,
+    publish_digest,
+    unpublish_digest,
+)
+from src.digest.render import deeplink
 from src.web import auth
 
 log = logging.getLogger(__name__)
@@ -43,6 +52,38 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+
+
+def _local_time(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.astimezone(ZoneInfo(cfg.TZ)).strftime("%d.%m %H:%M")
+
+
+TEMPLATES.env.globals["deeplink"] = deeplink
+TEMPLATES.env.globals["publish_labels"] = PUBLISH_LABELS
+TEMPLATES.env.filters["local_time"] = _local_time
+
+
+def make_bot() -> Any:
+    """Бот для публикации из админки. Отдельный от процесса бота — это обычный
+    HTTP Bot API, отправке сообщений параллельный polling не мешает."""
+    from src.bot.client import create_bot
+
+    return create_bot()
+
+
+async def with_bot(action: Callable[[Any], Awaitable[PublishResult]]) -> PublishResult:
+    if not cfg.BOT_TOKEN:
+        return PublishResult(False, "Не задан BOT_TOKEN — публиковать некем")
+    try:
+        bot = make_bot()
+    except Exception as exc:  # например, токен неверного формата
+        return PublishResult(False, f"Не удалось подключить бота: {exc}")
+    try:
+        return await action(bot)
+    finally:
+        await bot.session.close()
 
 
 def render(request: Request, name: str, context: dict[str, Any]) -> HTMLResponse:
@@ -192,6 +233,18 @@ async def groups_update(
         if value not in {"allow", "deny", "ask"}:
             raise HTTPException(400, "Недопустимый режим копировщика")
         await repo.set_chat_flags(chat_tg_id, copier=value)
+    elif field == "publish":
+        # дайджест в саму группу: только мне / по кнопке / автоматически
+        if value not in PUBLISH_MODES:
+            raise HTTPException(400, "Недопустимый режим публикации")
+        await repo.set_chat_flags(chat_tg_id, publish=value)
+    elif field == "ratings_publish":
+        current = await repo.get_chat_by_tg_id(chat_tg_id)
+        if current is None:
+            raise HTTPException(404, "Группа не найдена")
+        ratings = dict((current.settings or {}).get("ratings") or {})
+        ratings["publish"] = value == "1"
+        await repo.update_chat_settings(current.id, {"ratings": ratings})
     else:
         raise HTTPException(400, "Неизвестное поле")
 
@@ -318,19 +371,57 @@ async def digests_page(request: Request, _: dict = Depends(auth.require_owner)) 
 async def digest_detail(
     request: Request, digest_id: int, _: dict = Depends(auth.require_owner)
 ) -> HTMLResponse:
-    items = await repo.get_digest_items(digest_id)
-    if not items:
+    digest = await repo.get_digest_by_id(digest_id)
+    if digest is None:
         raise HTTPException(404, "Дайджест не найден")
+    chat = await repo.get_chat_by_id(digest.chat_id)
+    items = await repo.get_digest_items(digest_id)
     return render(
         request,
         "digest_detail.html",
         {
             "active": "digests",
+            "digest": digest,
+            "chat": chat,
+            "preview": group_preview(digest.payload, chat) if chat else [],
             "items": items,
             "shown": [i for i in items if i["shown"]],
             "missed": [i for i in items if not i["shown"]],
         },
     )
+
+
+async def _publish_box(
+    request: Request, digest_id: int, result: PublishResult | None
+) -> HTMLResponse:
+    digest = await repo.get_digest_by_id(digest_id)
+    if digest is None:
+        raise HTTPException(404, "Дайджест не найден")
+    chat = await repo.get_chat_by_id(digest.chat_id)
+    return render(
+        request, "_publish_box.html", {"digest": digest, "chat": chat, "result": result}
+    )
+
+
+@app.post("/digests/{digest_id}/publish", response_class=HTMLResponse)
+async def digest_publish(
+    request: Request, digest_id: int, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Опубликовать дайджест в его группе — после просмотра владельцем."""
+    auth.check_csrf(request, csrf_token)
+    result = await with_bot(lambda bot: publish_digest(bot, digest_id))
+    return await _publish_box(request, digest_id, result)
+
+
+@app.post("/digests/{digest_id}/unpublish", response_class=HTMLResponse)
+async def digest_unpublish(
+    request: Request, digest_id: int, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    auth.check_csrf(request, csrf_token)
+    result = await with_bot(lambda bot: unpublish_digest(bot, digest_id))
+    return await _publish_box(request, digest_id, result)
 
 
 @app.post("/feedback/{item_id}")
@@ -576,7 +667,9 @@ async def system_export(
 def main() -> None:
     import uvicorn
 
-    logging.basicConfig(level=cfg.LOG_LEVEL)
+    logging.basicConfig(
+        level=cfg.LOG_LEVEL, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+    )
     if not cfg.WEB_SECRET_KEY:
         raise SystemExit("Не задан WEB_SECRET_KEY — см. docs/SETUP.md")
     uvicorn.run(app, host=cfg.WEB_HOST, port=cfg.WEB_PORT)

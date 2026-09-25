@@ -73,6 +73,23 @@
     .topic { border-left: 3px solid var(--line); padding-left: 10px; margin: 10px 0; }
     .topic.shown { border-left-color: var(--ok); }
     .topic.missed { border-left-color: var(--muted); }
+    .scroll { overflow-x: auto; }
+    .fields {
+      display: grid; grid-template-columns: 160px 1fr; gap: 8px 12px; align-items: center;
+    }
+    @media (max-width: 560px) {
+      .fields { grid-template-columns: 1fr; gap: 4px; }
+      .fields > .controls { margin-bottom: 8px; }
+    }
+    .controls { display: flex; flex-wrap: wrap; gap: 6px; }
+    @media (max-width: 560px) { .wide-only { display: none; } }
+    .tg-post {
+      white-space: pre-wrap; background: var(--bg); border-left: 3px solid var(--accent);
+      border-radius: 6px; padding: 10px 12px; margin: 8px 0; word-break: break-word;
+    }
+    .note { padding: 8px 10px; border-radius: 6px; margin: 8px 0; background: var(--bg); }
+    .note.ok { border-left: 3px solid var(--ok); }
+    .note.bad { border-left: 3px solid var(--bad); }
   </style>
 </head>
 <body>

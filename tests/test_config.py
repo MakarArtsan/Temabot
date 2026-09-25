@@ -15,7 +15,7 @@ def settings_cls():
 
 def test_defaults_without_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls):
     """Без .env и переменных окружения конфиг грузится на дефолтах, а не падает."""
-    for key in ("TG_API_ID", "OWNER_ID", "LLM_MODEL", "TZ", "EMBED_BACKEND"):
+    for key in ("TG_API_ID", "OWNER_ID", "LLM_MODEL", "TZ", "EMBED_BACKEND", "APP_ROLE"):
         monkeypatch.delenv(key, raising=False)
     cfg = settings_cls(_env_file=tmp_path / "absent.env")
 
@@ -23,7 +23,7 @@ def test_defaults_without_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, s
     assert cfg.LLM_MODEL == "deepseek-flash"
     assert cfg.EMBED_BACKEND == "local"
     assert cfg.EMBED_DIM == 1024
-    assert cfg.APP_ROLE == "bot"
+    assert cfg.APP_ROLE == "all"
 
 
 def test_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls):
@@ -127,8 +127,8 @@ def test_config_module_exposes_singleton():
 def test_all_container_roles_are_valid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
 ):
-    """Точка входа образа умеет четыре роли — конфиг должен принимать каждую."""
-    for role in ("collector", "bot", "web", "migrate"):
+    """Точка входа образа умеет пять ролей — конфиг должен принимать каждую."""
+    for role in ("all", "collector", "bot", "web", "migrate"):
         monkeypatch.setenv("APP_ROLE", role)
         assert settings_cls(_env_file=tmp_path / "absent.env").APP_ROLE == role
 

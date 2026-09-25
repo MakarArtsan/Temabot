@@ -262,7 +262,7 @@ async def test_one_broken_group_does_not_cancel_the_rest(monkeypatch: pytest.Mon
             chat_tg_id=chat.tg_id, day=day, chat_title=chat.title or "",
             highlights=["главное"], msg_count=5, participants=2,
         )
-        return SimpleNamespace(data=data, topics=[])
+        return SimpleNamespace(data=data, topics=[], digest_id=None)
 
     async def set_state(key: str, value: Any) -> None:
         return None

@@ -1,6 +1,7 @@
-# Один образ на три роли: collector, bot, web (TZ §6, шаг 13).
-# Роль выбирается переменной APP_ROLE во время запуска, а не при сборке —
-# так три проекта Amvera собираются из одного репозитория и одного amvera.yml.
+# Один образ на все роли (TZ §6, шаг 13). По умолчанию APP_ROLE=all: bot, web и
+# collector работают в одном контейнере — на Amvera это один проект.
+# Роль выбирается во время запуска, а не при сборке, поэтому при желании из того
+# же образа можно поднять и три отдельных проекта (APP_ROLE=bot|web|collector).
 FROM python:3.11-slim
 
 # EXTRAS решает, какие необязательные зависимости попадут в образ.
@@ -11,7 +12,7 @@ ARG EXTRAS=media,web,ml
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    APP_ROLE=bot \
+    APP_ROLE=all \
     DATA_DIR=/data \
     TG_SESSION=/data/collector.session \
     WEB_HOST=0.0.0.0 \

@@ -35,7 +35,7 @@ TZ=Europe/Moscow
 | `TG_API_ID`, `TG_API_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools → создать приложение. Выдадут число `api_id` и строку `api_hash` |
 | `BOT_TOKEN` | @BotFather → твой бот-копировщик → `/token` (лучше перевыпустить: старый лежал в коде) |
 | `LLM_API_KEY` | [platform.deepseek.com](https://platform.deepseek.com) → API keys |
-| `DATABASE_URL` | Supabase → проект → **Connect** → вкладка ORMs/URI → строка вида `postgresql://postgres:ПАРОЛЬ@db.xxx.supabase.co:5432/postgres`. Это не то же самое, что ключи `NEXT_PUBLIC_*` (см. ниже) |
+| `DATABASE_URL` | Supabase → проект → **Connect** → **Session pooler** → строка вида `postgresql://postgres.xxx:ПАРОЛЬ@aws-0-….pooler.supabase.com:5432/postgres`. Прямое подключение `db.xxx.supabase.co` работает только по IPv6 — с Amvera до него не достучаться. Это не то же самое, что ключи `NEXT_PUBLIC_*` (см. ниже) |
 | `TELEGRAPH_TOKEN` | оставь пустым: при первом запуске бот создаст аккаунт и напишет токен в лог — тогда впишешь |
 | `TG_SESSION_STRING` | оставь пустым для локального запуска; для деплоя получишь через `make login` (см. ниже) |
 | `WEB_SECRET_KEY` | любая длинная случайная строка, например из `python3 -c "import secrets; print(secrets.token_hex(32))"` |

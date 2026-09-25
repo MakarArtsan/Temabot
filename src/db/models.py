@@ -7,6 +7,7 @@ from datetime import date, datetime, time
 from typing import Any
 
 CopierMode = str  # allow | deny | ask
+PublishMode = str  # off | manual | auto — публикация дайджеста в саму группу
 ContribRole = str  # initiator | key | answerer
 
 
@@ -31,6 +32,7 @@ class Chat:
     collect: bool = False
     digest: bool = False
     copier: CopierMode = "ask"
+    publish: PublishMode = "off"
     digest_time: time | None = None
     retention_days: int = 365
     settings: dict[str, Any] = field(default_factory=dict)
@@ -46,6 +48,7 @@ class Chat:
             collect=row["collect"],
             digest=row["digest"],
             copier=row["copier"],
+            publish=row.get("publish") or "off",
             digest_time=row["digest_time"],
             retention_days=row["retention_days"],
             settings=_as_dict(row["settings"]),
@@ -152,6 +155,8 @@ class Digest:
     msg_count: int = 0
     tokens_used: int = 0
     created_at: datetime | None = None
+    published_at: datetime | None = None          # когда ушёл в саму группу
+    published_msg_ids: list[int] = field(default_factory=list)
 
     @property
     def topics(self) -> list[dict[str, Any]]:
@@ -175,6 +180,8 @@ class Digest:
             msg_count=row["msg_count"],
             tokens_used=row["tokens_used"],
             created_at=row["created_at"],
+            published_at=row.get("published_at"),
+            published_msg_ids=list(row.get("published_msg_ids") or []),
         )
 
 

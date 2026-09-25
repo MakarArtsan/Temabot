@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT = Path(__file__).resolve().parent.parent
 
 # migrate — разовый запуск миграций тем же образом (docker/entrypoint.sh)
-AppRole = Literal["collector", "bot", "web", "migrate"]
+AppRole = Literal["all", "collector", "bot", "web", "migrate"]
 
 
 class Settings(BaseSettings):
@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # collector при первом старте сам заливает историю за столько дней; 0 — не заливать
     BACKFILL_DAYS: int = 7
     BOT_TOKEN: str = ""
+    # Адрес Bot API. Пусто — официальный api.telegram.org; для локальных проверок
+    # сюда ставится подставной сервер, чтобы ничего не ушло в живой Telegram
+    BOT_API_URL: str = ""
     OWNER_ID: int = 0
     TELEGRAPH_TOKEN: str = ""
     TELEGRAPH_SHORT_NAME: str = "TeleTemaBot"
@@ -99,7 +102,13 @@ class Settings(BaseSettings):
     TZ: str = "Europe/Moscow"  # сутки дайджеста и время рассылок
     DATA_DIR: Path = ROOT / "data"
     LOG_LEVEL: str = "INFO"
-    APP_ROLE: AppRole = "bot"
+    # all — bot, web и collector в одном контейнере (src/supervisor.py);
+    # остальные роли — по процессу на проект, если так удобнее масштабировать
+    APP_ROLE: AppRole = "all"
+    SERVICES: str = "bot,web,collector"  # что запускать при APP_ROLE=all
+    # бот накатывает схему при старте; супервизор делает это сам до запуска всех
+    # процессов и выключает повтор, чтобы ALTER не столкнулся с запросами коллектора
+    MIGRATE_ON_START: bool = True
 
     # --- Веб-админка ---
     WEB_SECRET_KEY: str = ""

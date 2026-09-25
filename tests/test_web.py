@@ -304,3 +304,194 @@ def test_healthz_reports_database_trouble(client: Any, monkeypatch: pytest.Monke
     monkeypatch.setattr(web_app.pool, "fetchval", broken)
 
     assert client.get("/healthz").json()["database"] == "fail"
+
+
+# ================================================ публикация дайджеста в группу
+
+def _csrf(client: Any) -> str:
+    return auth.read_session(client.cookies.get(auth.COOKIE_NAME))["csrf"]
+
+
+def _digest(publish_at: Any = None) -> Any:
+    from datetime import date
+
+    from src.db.models import Digest
+    from src.digest.render import DigestData, Topic
+
+    data = DigestData(
+        chat_tg_id=-100111, day=date(2026, 9, 24), chat_title="Рабочая",
+        highlights=["договорились о релизе"],
+        topics=[Topic(thread_id=1, title="Релиз <в пятницу>", takeaway="едем", msg_count=4)],
+        msg_count=30, participants=5,
+    )
+    return Digest(id=5, chat_id=1, day=data.day, summary_md="", payload=data.to_dict(),
+                  published_at=publish_at, published_msg_ids=[501] if publish_at else [])
+
+
+@pytest.fixture
+def digest_page(owner_client: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from src.db.models import Chat
+
+    state: dict[str, Any] = {"mode": "manual", "published_at": None}
+
+    async def get_digest_by_id(digest_id: int) -> Any:
+        return _digest(state["published_at"])
+
+    async def get_chat_by_id(chat_id: int) -> Chat:
+        return Chat(id=1, tg_id=-100111, title="Рабочая", digest=True, publish=state["mode"])
+
+    async def empty_list(*a: Any, **kw: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(web_app.repo, "get_digest_by_id", get_digest_by_id)
+    monkeypatch.setattr(web_app.repo, "get_chat_by_id", get_chat_by_id)
+    monkeypatch.setattr(web_app.repo, "get_digest_items", empty_list)
+    owner_client.state = state
+    return owner_client
+
+
+def test_digest_page_shows_what_the_group_would_see(digest_page: Any):
+    text = digest_page.get("/digests/5").text
+
+    assert "Так его увидит группа" in text
+    assert "Релиз &lt;в пятницу&gt;" in text, "текст из группы экранирован"
+    assert "<в пятницу>" not in text
+    assert "Опубликовать в группе" in text and 'hx-confirm="Опубликовать' in text
+
+
+def test_digest_page_without_permission_has_no_button(digest_page: Any):
+    digest_page.state["mode"] = "off"
+    text = digest_page.get("/digests/5").text
+
+    assert "Публикация в группу выключена" in text
+    assert "/digests/5/publish" not in text
+
+
+def test_published_digest_offers_removal(digest_page: Any):
+    from datetime import UTC, datetime
+
+    digest_page.state["published_at"] = datetime(2026, 9, 24, 20, 31, tzinfo=UTC)
+    text = digest_page.get("/digests/5").text
+
+    from src.digest.render import deeplink
+
+    assert "Опубликован в группе 24.09 23:31" in text, "время — по Москве"
+    assert deeplink(-100111, 501) in text
+    assert "убрать из группы" in text
+
+
+def test_publish_from_admin(digest_page: Any, monkeypatch: pytest.MonkeyPatch):
+    from src.digest.publish import PublishResult
+
+    calls: list[tuple[Any, int]] = []
+    closed: list[bool] = []
+
+    class Session:
+        async def close(self) -> None:
+            closed.append(True)
+
+    class FakeBot:
+        session = Session()
+
+    async def fake_publish(bot: Any, digest_id: int) -> PublishResult:
+        calls.append((bot, digest_id))
+        return PublishResult(True, "Опубликовал в «Рабочая»", message_ids=[501],
+                             link="https://t.me/c/111/501")
+
+    monkeypatch.setattr(web_app, "make_bot", FakeBot)
+    monkeypatch.setattr(web_app, "publish_digest", fake_publish)
+
+    response = digest_page.post("/digests/5/publish", data={"csrf_token": _csrf(digest_page)})
+
+    assert response.status_code == 200
+    assert len(calls) == 1 and calls[0][1] == 5
+    assert closed == [True], "сессию бота закрываем"
+    assert "Опубликовал" in response.text
+
+
+def test_publish_needs_csrf(digest_page: Any, monkeypatch: pytest.MonkeyPatch):
+    async def explode(*a: Any, **kw: Any) -> Any:
+        raise AssertionError("без CSRF не публикуем")
+
+    monkeypatch.setattr(web_app, "publish_digest", explode)
+    response = digest_page.post("/digests/5/publish", data={"csrf_token": "мимо"})
+
+    assert response.status_code == 403
+
+
+def test_publish_needs_login(client: Any):
+    assert client.post("/digests/5/publish").status_code == 303
+    assert client.post("/digests/5/unpublish").status_code == 303
+    assert client.get("/digests/5").status_code == 303
+
+
+def test_group_publish_mode_is_saved(owner_client: Any, monkeypatch: pytest.MonkeyPatch):
+    from src.db.models import Chat
+
+    saved: list[dict[str, Any]] = []
+
+    async def set_chat_flags(chat_tg_id: int, **kw: Any) -> None:
+        saved.append(kw)
+
+    async def get_chat_by_tg_id(chat_tg_id: int) -> Chat:
+        return Chat(id=1, tg_id=chat_tg_id, title="Рабочая", publish="auto")
+
+    monkeypatch.setattr(web_app.repo, "set_chat_flags", set_chat_flags)
+    monkeypatch.setattr(web_app.repo, "get_chat_by_tg_id", get_chat_by_tg_id)
+    csrf = _csrf(owner_client)
+
+    ok = owner_client.post(
+        "/groups/-100111", data={"field": "publish", "value": "auto", "csrf_token": csrf}
+    )
+    bad = owner_client.post(
+        "/groups/-100111", data={"field": "publish", "value": "везде", "csrf_token": csrf}
+    )
+
+    assert ok.status_code == 200 and saved == [{"publish": "auto"}]
+    assert bad.status_code == 400
+
+
+def test_ratings_publication_toggle_keeps_other_settings(
+    owner_client: Any, monkeypatch: pytest.MonkeyPatch
+):
+    from src.db.models import Chat
+
+    patches: list[dict[str, Any]] = []
+
+    async def get_chat_by_tg_id(chat_tg_id: int) -> Chat:
+        return Chat(id=1, tg_id=chat_tg_id, title="Рабочая",
+                    settings={"ratings": {"publish": False, "extra": 1}, "top_n": 5})
+
+    async def update_chat_settings(chat_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        patches.append(patch)
+        return patch
+
+    monkeypatch.setattr(web_app.repo, "get_chat_by_tg_id", get_chat_by_tg_id)
+    monkeypatch.setattr(web_app.repo, "update_chat_settings", update_chat_settings)
+
+    response = owner_client.post(
+        "/groups/-100111",
+        data={"field": "ratings_publish", "value": "1", "csrf_token": _csrf(owner_client)},
+    )
+
+    assert response.status_code == 200
+    assert patches == [{"ratings": {"publish": True, "extra": 1}}]
+
+
+def test_groups_page_shows_publication_modes(owner_client: Any):
+    text = owner_client.get("/groups").text
+
+    assert "только мне" in text and "по кнопке" in text and "автоматически" in text
+    assert "рейтинг недели: только мне" in text
+
+
+def test_broken_token_gives_a_message_not_a_crash(
+    digest_page: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """Настоящий конструктор бота отвергает токен — админка не падает с 500."""
+    monkeypatch.setattr(cfg, "BOT_TOKEN", "не-токен")
+
+    response = digest_page.post("/digests/5/publish", data={"csrf_token": _csrf(digest_page)})
+
+    assert response.status_code == 200
+    assert "Не удалось подключить бота" in response.text

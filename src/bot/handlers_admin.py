@@ -23,6 +23,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from src.bot.middlewares import settings_cache
 from src.config import cfg
 from src.db import repo
+from src.digest.publish import PUBLISH_LABELS
 from src.digest.render import esc_html
 
 log = logging.getLogger(__name__)
@@ -188,7 +189,9 @@ async def on_groups(message: types.Message) -> None:
         await message.answer(
             f"<b>{esc_html(chat.title or str(chat.tg_id))}</b>\n"
             f"<code>{chat.tg_id}</code>\n"
-            f"копировщик: {COPIER_LABELS.get(chat.copier, chat.copier)}",
+            f"копировщик: {COPIER_LABELS.get(chat.copier, chat.copier)}\n"
+            f"дайджест в группу: {PUBLISH_LABELS.get(chat.publish, chat.publish)} "
+            "(меняется в админке)",
             parse_mode="HTML",
             reply_markup=kb.as_markup(),
         )

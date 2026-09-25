@@ -192,6 +192,20 @@ alter table author_stats_daily add column if not exists short_msgs int default 0
 
 create table if not exists state (key text primary key, value jsonb);  -- last_msg_id и пр.
 
+-- Публикация дайджеста в саму группу (решение владельца, см. TZ §9):
+-- off — только владельцу (по умолчанию), manual — по кнопке после просмотра,
+-- auto — сразу после сборки, раз в сутки. Дайджест группы уходит только в неё же.
+alter table chats add column if not exists publish text default 'off';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'chats_publish_check') then
+    alter table chats add constraint chats_publish_check
+      check (publish in ('off', 'manual', 'auto'));
+  end if;
+end $$;
+alter table digests add column if not exists published_at timestamptz;
+alter table digests add column if not exists published_msg_ids bigint[];
+
 -- ------------------------------------------------- приватность (TZ §9)
 
 -- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями

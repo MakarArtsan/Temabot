@@ -1,4 +1,4 @@
-.PHONY: install install-dev run-collector run-bot run-web migrate backfill digest ratings lint fmt typecheck test check
+.PHONY: install install-dev run-all run-collector run-bot run-web migrate backfill digest ratings lint fmt typecheck test check
 
 PY ?= python3
 
@@ -7,6 +7,9 @@ install:
 
 install-dev:
 	$(PY) -m pip install -e ".[dev]"
+
+run-all:
+	$(PY) -m src.supervisor
 
 run-collector:
 	$(PY) -m src.collector

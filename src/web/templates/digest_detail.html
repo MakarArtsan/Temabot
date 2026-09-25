@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Дайджест{% endblock %}
-{% block h1 %}Разбор дайджеста{% endblock %}
+{% block h1 %}Дайджест «{{ chat.title if chat and chat.title else digest.chat_id }}» за {{ digest.day.strftime('%d.%m.%Y') }}{% endblock %}
 {% block content %}
 {% macro topic_card(item, missed) %}
   <div class="topic {{ 'missed' if missed else 'shown' }}">
@@ -42,6 +42,17 @@
     </div>
   </div>
 {% endmacro %}
+
+<div class="card">
+  <h2 style="margin-top:0">Так его увидит группа</h2>
+  {% for part in preview %}
+    {# текст собран render_html: всё, что пришло от людей и модели, уже экранировано #}
+    <div class="tg-post">{{ part|safe }}</div>
+  {% else %}
+    <p class="muted">У этого дайджеста нет сохранённой структуры — пересобери его на странице «Система».</p>
+  {% endfor %}
+  {% include "_publish_box.html" %}
+</div>
 
 <div class="card">
   <h2 style="margin-top:0">Попали в дайджест ({{ shown|length }})</h2>

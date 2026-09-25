@@ -1,0 +1,31 @@
+<div id="publish-box">
+  {% if result %}
+    <div class="note {{ 'ok' if result.ok else 'bad' }}">
+      {{ result.text }}
+      {% if result.link %} · <a href="{{ result.link }}" target="_blank" rel="noopener">пост в группе</a>{% endif %}
+    </div>
+  {% endif %}
+  {% if not chat %}
+    <p class="muted">Группа этого дайджеста не найдена.</p>
+  {% elif digest.published_at %}
+    <p>
+      ✓ Опубликован в группе {{ digest.published_at|local_time }}
+      {% if digest.published_msg_ids %}
+        · <a href="{{ deeplink(chat.tg_id, digest.published_msg_ids[0]) }}" target="_blank" rel="noopener">открыть пост</a>
+      {% endif %}
+    </p>
+    <button class="ghost" hx-post="/digests/{{ digest.id }}/unpublish"
+            hx-target="#publish-box" hx-swap="outerHTML"
+            hx-confirm="Удалить этот дайджест из группы? Бот может удалять свои сообщения только первые 48 часов."
+            hx-vals='{"csrf_token":"{{ csrf }}"}'>убрать из группы</button>
+  {% elif chat.publish == 'off' %}
+    <p class="muted">Публикация в группу выключена: дайджест видишь только ты.
+      Включить можно на странице <a href="/groups">«Группы»</a>.</p>
+  {% else %}
+    <button hx-post="/digests/{{ digest.id }}/publish"
+            hx-target="#publish-box" hx-swap="outerHTML"
+            hx-confirm="Опубликовать дайджест в группе «{{ chat.title or chat.tg_id }}»? Его увидят все участники."
+            hx-vals='{"csrf_token":"{{ csrf }}"}'>📢 Опубликовать в группе</button>
+    <span class="muted">режим: {{ publish_labels[chat.publish] }}</span>
+  {% endif %}
+</div>

@@ -375,7 +375,7 @@ async def test_publish_sends_to_the_group_when_allowed(monkeypatch: pytest.Monke
 
     class FakeBot:
         async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
-            sent.append({"chat_id": chat_id, "text": text})
+            sent.append({"chat_id": chat_id, "text": text, **kw})
 
     async def stats(*a: Any, **kw: Any) -> list[dict[str, Any]]:
         return [row(VASYA, usefulness=0.9, questions_answered=2)]
@@ -385,3 +385,4 @@ async def test_publish_sends_to_the_group_when_allowed(monkeypatch: pytest.Monke
 
     assert await ratings_bot.publish_ratings(FakeBot(), chat, "week") is True
     assert sent[0]["chat_id"] == -1002354231333, "в саму группу, а не владельцу"
+    assert sent[0]["disable_notification"] is True, "поздно вечером — без звука"

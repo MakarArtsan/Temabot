@@ -1,33 +1,71 @@
-<tr id="chat-{{ chat.tg_id }}">
-  <td>
-    <strong>{{ chat.title or chat.tg_id }}</strong><br>
+<div class="card group" id="chat-{{ chat.tg_id }}">
+  <div style="margin-bottom:8px">
+    <strong>{{ chat.title or chat.tg_id }}</strong>
     <code class="muted">{{ chat.tg_id }}</code>
-  </td>
-  <td>
-    <button class="{{ '' if chat.collect else 'ghost' }}"
-            hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-            hx-swap="outerHTML"
-            hx-vals='{"field":"collect","value":"{{ 0 if chat.collect else 1 }}","csrf_token":"{{ csrf }}"}'>
-      {{ 'сбор включён' if chat.collect else 'сбор выключен' }}
-    </button>
-  </td>
-  <td>
-    <button class="{{ '' if chat.digest else 'ghost' }}"
-            hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-            hx-swap="outerHTML"
-            hx-vals='{"field":"digest","value":"{{ 0 if chat.digest else 1 }}","csrf_token":"{{ csrf }}"}'>
-      {{ 'дайджест включён' if chat.digest else 'дайджест выключен' }}
-    </button>
-  </td>
-  <td>
-    {% for mode, label in [('allow','разрешён'), ('ask','спросить'), ('deny','запрещён')] %}
-      <button class="{{ '' if chat.copier == mode else 'ghost' }}"
+  </div>
+  <div class="fields">
+    <span class="muted">Сбор</span>
+    <div class="controls">
+      <button class="{{ '' if chat.collect else 'ghost' }}"
               hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
               hx-swap="outerHTML"
-              hx-vals='{"field":"copier","value":"{{ mode }}","csrf_token":"{{ csrf }}"}'>
-        {{ label }}
+              hx-vals='{"field":"collect","value":"{{ 0 if chat.collect else 1 }}","csrf_token":"{{ csrf }}"}'>
+        {{ 'сбор включён' if chat.collect else 'сбор выключен' }}
       </button>
-    {% endfor %}
-  </td>
-  <td class="muted">{{ chat.digest_time }} · {{ chat.retention_days }} дн.</td>
-</tr>
+    </div>
+
+    <span class="muted">Дайджест</span>
+    <div class="controls">
+      <button class="{{ '' if chat.digest else 'ghost' }}"
+              hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+              hx-swap="outerHTML"
+              hx-vals='{"field":"digest","value":"{{ 0 if chat.digest else 1 }}","csrf_token":"{{ csrf }}"}'>
+        {{ 'дайджест включён' if chat.digest else 'дайджест выключен' }}
+      </button>
+    </div>
+
+    <span class="muted">Копировщик</span>
+    <div class="controls">
+      {% for mode, label in [('allow','разрешён'), ('ask','спросить'), ('deny','запрещён')] %}
+        <button class="{{ '' if chat.copier == mode else 'ghost' }}"
+                hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+                hx-swap="outerHTML"
+                hx-vals='{"field":"copier","value":"{{ mode }}","csrf_token":"{{ csrf }}"}'>
+          {{ label }}
+        </button>
+      {% endfor %}
+    </div>
+
+    <span class="muted">Дайджест в группу</span>
+    <div class="controls">
+      {% for mode in ['off', 'manual', 'auto'] %}
+        <button class="{{ '' if chat.publish == mode else 'ghost' }}"
+                hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+                hx-swap="outerHTML"
+                {% if mode == 'auto' and chat.publish != 'auto' %}
+                hx-confirm="Дайджест будет каждый вечер сам публиковаться в группе «{{ chat.title or chat.tg_id }}». Включить?"
+                {% endif %}
+                hx-vals='{"field":"publish","value":"{{ mode }}","csrf_token":"{{ csrf }}"}'>
+          {{ publish_labels[mode] }}
+        </button>
+      {% endfor %}
+    </div>
+
+    {% set ratings_public = ((chat.settings or {}).get('ratings') or {}).get('publish') %}
+    <span class="muted">Рейтинг недели</span>
+    <div class="controls">
+      <button class="{{ '' if ratings_public else 'ghost' }}"
+              hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
+              hx-swap="outerHTML"
+              {% if not ratings_public %}
+              hx-confirm="Рейтинг недели с именами будет публиковаться в группе по воскресеньям. Админы группы согласны?"
+              {% endif %}
+              hx-vals='{"field":"ratings_publish","value":"{{ 0 if ratings_public else 1 }}","csrf_token":"{{ csrf }}"}'>
+        {{ 'рейтинг недели: в группе' if ratings_public else 'рейтинг недели: только мне' }}
+      </button>
+    </div>
+
+    <span class="muted">Время · хранение</span>
+    <div class="muted">{{ chat.digest_time.strftime('%H:%M') if chat.digest_time else '23:30' }} · {{ chat.retention_days }} дн.</div>
+  </div>
+</div>

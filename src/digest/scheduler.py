@@ -52,12 +52,36 @@ async def send_daily_digests(bot: Any, *, day: date_type | None = None) -> int:
         except Exception:
             log.exception("Не удалось отправить дайджест группы %s", chat.tg_id)
 
+        await publish_to_group(bot, chat, result.digest_id)
+
     await repo.set_state(
         "digest:last_run",
         {"day": day.isoformat(), "sent": sent, "at": datetime.now(ZoneInfo(cfg.TZ)).isoformat()},
     )
     log.info("Дайджестов отправлено: %s из %s", sent, len(chats))
     return sent
+
+
+async def publish_to_group(bot: Any, chat: Any, digest_id: int | None) -> None:
+    """Дайджест в саму группу — только в режиме, который выбрал владелец.
+
+    auto — публикуем сразу и сообщаем владельцу; manual — присылаем ему кнопку;
+    off (по умолчанию) — ничего не делаем.
+    """
+    mode = getattr(chat, "publish", "off")
+    if mode == "off" or not digest_id:
+        return
+    from src.bot.handlers_publish import offer_publication, report_auto_publication
+    from src.digest.publish import publish_digest
+
+    try:
+        if mode == "auto":
+            result = await publish_digest(bot, digest_id, auto=True)
+            await report_auto_publication(bot, result)
+        else:
+            await offer_publication(bot, chat, await repo.get_digest_by_id(digest_id))
+    except Exception:
+        log.exception("Публикация дайджеста группы %s не удалась", chat.tg_id)
 
 
 async def send_digest(

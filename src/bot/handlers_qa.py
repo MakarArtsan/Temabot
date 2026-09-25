@@ -13,6 +13,7 @@ from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 
 from src.bot.handlers_feedback import feedback_keyboard
+from src.bot.handlers_publish import offer_publication
 from src.config import cfg
 from src.db import repo
 from src.db.models import Chat
@@ -173,6 +174,7 @@ async def on_digest(message: types.Message, command: CommandObject) -> None:
             for topic in data.topics:
                 topic.item_id = by_thread.get(topic.thread_id)
             await send_digest(message.bot, message.chat.id, data, topics=data.topics)
+            await offer_publication(message.bot, chat, stored)
             continue
 
         await message.answer(f"Собираю дайджест «{chat.title or chat.tg_id}» за {day}…")
@@ -183,6 +185,9 @@ async def on_digest(message: types.Message, command: CommandObject) -> None:
             await message.answer(f"Не получилось: {esc_html(str(exc))}", parse_mode="HTML")
             continue
         await send_digest(message.bot, message.chat.id, result.data, topics=result.topics)
+        if result.digest_id:
+            stored = await repo.get_digest_by_id(result.digest_id)
+            await offer_publication(message.bot, chat, stored)
 
 
 @router.message(Command("missed"))

@@ -4,11 +4,18 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from src.bot import handlers_admin, handlers_feedback, handlers_qa, handlers_ratings
+from src.bot import (
+    handlers_admin,
+    handlers_feedback,
+    handlers_publish,
+    handlers_qa,
+    handlers_ratings,
+)
 from src.bot import handlers_copier as copier
+from src.bot.client import create_bot
 from src.bot.middlewares import CopierAccess, CopierRateLimit, OwnerOnly, RateLimit
 from src.config import cfg
 from src.db import pool, repo
@@ -49,6 +56,10 @@ def build_dispatcher() -> Dispatcher:
     feedback = handlers_feedback.router
     feedback.callback_query.middleware(OwnerOnly())
 
+    # публикация дайджеста в группу — кнопки только у владельца
+    publish = handlers_publish.router
+    publish.callback_query.middleware(OwnerOnly())
+
     # /optout доступен участникам группы, поэтому мидлвари владельца здесь нет
     ratings = handlers_ratings.router
 
@@ -61,6 +72,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(copier.router)
     dp.include_router(admin)
     dp.include_router(feedback)
+    dp.include_router(publish)
     dp.include_router(ratings)
     dp.include_router(qa)
     _dispatcher = dp
@@ -74,12 +86,13 @@ async def run() -> None:
         raise SystemExit("Не задан OWNER_ID: без него бот отвечал бы кому попало")
 
     if cfg.DATABASE_URL:
-        await apply_schema(cfg.DATABASE_URL)
+        if cfg.MIGRATE_ON_START:
+            await apply_schema(cfg.DATABASE_URL)
         if cfg.TG_GROUP_ID:
             # копировщик в основной группе должен работать сразу после деплоя
             await repo.bootstrap_primary_chat(cfg.TG_GROUP_ID)
 
-    bot = Bot(cfg.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = create_bot(default=DefaultBotProperties(parse_mode="HTML"))
     dp = build_dispatcher()
 
     me = await bot.get_me()
