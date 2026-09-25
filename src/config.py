@@ -72,6 +72,13 @@ class Settings(BaseSettings):
 
     # --- ASR (расшифровка голосовых) ---
     ASR_ENABLED: bool = True          # на слабом тарифе можно выключить (TZ шаг 13)
+    # Откуда брать расшифровку голосовых:
+    #   auto     — сначала силами Telegram (нужен Premium), иначе локальный whisper
+    #   telegram — только силами Telegram, без запасного варианта
+    #   local    — только локальный whisper
+    ASR_PROVIDER: str = "auto"
+    TELEGRAM_ASR_MAX_SEC: int = 180   # длиннее Telegram не расшифровывает
+    TELEGRAM_ASR_WAIT_SEC: int = 90   # сколько ждать готовую расшифровку
     WHISPER_MODEL: str = "small"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"

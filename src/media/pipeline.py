@@ -51,6 +51,8 @@ class QueueStats:
     failed: int = 0
     dropped: int = 0
     skipped: int = 0
+    by_telegram: int = 0    # расшифровано силами Telegram, без скачивания
+    by_whisper: int = 0     # расшифровано локально
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -59,10 +61,13 @@ class QueueStats:
             "failed": self.failed,
             "dropped": self.dropped,
             "skipped": self.skipped,
+            "by_telegram": self.by_telegram,
+            "by_whisper": self.by_whisper,
         }
 
 
 Transcriber = Callable[[str | Path], Awaitable[str]]
+TelegramTranscriber = Callable[[Any], Awaitable[str | None]]
 Describer = Callable[..., Awaitable[str]]
 
 
@@ -78,6 +83,7 @@ class MediaQueue:
         self,
         transcriber: Transcriber,
         *,
+        telegram_transcriber: TelegramTranscriber | None = None,
         describer: Describer | None = None,
         concurrency: int | None = None,
         maxsize: int | None = None,
@@ -85,6 +91,7 @@ class MediaQueue:
         keep_files: bool | None = None,
     ) -> None:
         self.transcriber = transcriber
+        self.telegram_transcriber = telegram_transcriber
         self.describer = describer or _no_description
         self.concurrency = concurrency if concurrency is not None else cfg.MEDIA_CONCURRENCY
         self.media_dir = media_dir or cfg.media_dir
@@ -164,6 +171,23 @@ class MediaQueue:
                 self._queue.task_done()
 
     async def _handle(self, job: MediaJob) -> None:
+        # Сначала пробуем расшифровку силами Telegram: она не требует ни
+        # скачивания файла, ни процессора, ни места на диске.
+        if job.media_type in TRANSCRIBABLE and self.telegram_transcriber is not None:
+            text = (await self.telegram_transcriber(job.message) or "").strip()
+            if text:
+                await repo.set_transcript(job.chat_id, job.tg_msg_id, text)
+                self.stats.by_telegram += 1
+                log.info(
+                    "Telegram расшифровал сообщение %s (%s символов), файл не качали",
+                    job.tg_msg_id, len(text),
+                )
+                return
+            if cfg.ASR_PROVIDER == "telegram":
+                # запасного варианта нет — на этом заканчиваем
+                log.info("Telegram не расшифровал сообщение %s", job.tg_msg_id)
+                return
+
         path = await self._download(job)
         if path is None:
             raise RuntimeError(f"Telegram не отдал файл сообщения {job.tg_msg_id}")
@@ -175,6 +199,8 @@ class MediaQueue:
         else:
             # расшифровщик подменяемый, на пробелы полагаться нельзя
             text = (await self.transcriber(path) or "").strip()
+            if text:
+                self.stats.by_whisper += 1
 
         if text:
             await repo.set_transcript(job.chat_id, job.tg_msg_id, text)

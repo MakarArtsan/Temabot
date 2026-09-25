@@ -239,7 +239,10 @@ async def test_null_queue_accepts_nothing(tmp_path: Path):
 
 
 def test_stats_shape_for_admin_page():
-    stats = mp.QueueStats(queued=5, done=3, failed=1, dropped=1, skipped=2)
+    stats = mp.QueueStats(
+        queued=5, done=3, failed=1, dropped=1, skipped=2, by_telegram=2, by_whisper=1
+    )
     assert stats.as_dict() == {
-        "queued": 5, "done": 3, "failed": 1, "dropped": 1, "skipped": 2
+        "queued": 5, "done": 3, "failed": 1, "dropped": 1, "skipped": 2,
+        "by_telegram": 2, "by_whisper": 1,
     }

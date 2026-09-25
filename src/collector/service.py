@@ -200,10 +200,19 @@ def build_media_queue(*, dry_run: bool) -> MediaQueue | NullMediaQueue:
     if dry_run or not (cfg.ASR_ENABLED or cfg.VISION_ENABLED):
         log.info("Обработка медиа выключена")
         return NullMediaQueue()
+
     from src.media.image import describe_image
+    from src.media.telegram_asr import transcribe_message
     from src.media.voice import transcribe
 
-    return MediaQueue(transcribe, describer=describe_image)
+    # При ASR_PROVIDER=local к Telegram не обращаемся вовсе
+    telegram_asr = None if cfg.ASR_PROVIDER == "local" else transcribe_message
+    if telegram_asr is not None:
+        log.info("Расшифровка: сначала силами Telegram (%s)", cfg.ASR_PROVIDER)
+
+    return MediaQueue(
+        transcribe, telegram_transcriber=telegram_asr, describer=describe_image
+    )
 
 
 async def requeue_pending_media(collector: Collector, chat: Chat, limit: int = 200) -> int:
