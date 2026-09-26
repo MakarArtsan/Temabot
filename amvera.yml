@@ -5,6 +5,7 @@ meta:
   environment: docker
   toolchain:
     name: docker
+    version: latest   # так записывает сама Amvera, когда меняют настройки в её интерфейсе
 
 build:
   dockerfile: Dockerfile
