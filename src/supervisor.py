@@ -241,10 +241,13 @@ async def supervise(
 
         # импорт здесь: src.db.pool читает настройки при импорте, а main() должен
         # успеть сам сообщить об их ошибках
-        from src.db.pool import dsn_problem
+        from src.db.pool import dsn_hint, dsn_problem
 
         rest = [name for name in plan.run if name != "web"]
         problem = dsn_problem(settings.DATABASE_URL)
+        hint = dsn_hint(settings.DATABASE_URL)
+        if hint:
+            log.warning("%s", hint)
         if rest and problem:
             # повторять подключение бессмысленно: строка сломана, нужен человек
             await _idle(stop, f"bot и collector не запущены. {problem}")

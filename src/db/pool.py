@@ -53,6 +53,22 @@ def dsn_problem(dsn: str) -> str | None:
     return None
 
 
+def dsn_hint(dsn: str) -> str | None:
+    """Подсказка, которая не мешает запуску, но объясняет частую ошибку.
+
+    Прямое подключение Supabase (db.<проект>.supabase.co) доступно только по IPv6.
+    На хостингах без IPv6 оно падает с «Network is unreachable».
+    """
+    host = (urlsplit(dsn).hostname or "") if dsn else ""
+    if host.startswith("db.") and host.endswith(".supabase.co"):
+        return (
+            "DATABASE_URL указывает на прямое подключение Supabase (db.….supabase.co) — "
+            "оно работает только по IPv6. Возьми строку Session pooler: Supabase → Connect → "
+            "Session pooler (хост …pooler.supabase.com, порт 5432)"
+        )
+    return None
+
+
 def uses_transaction_pooler(dsn: str) -> bool:
     """Похоже ли, что подключение идёт через пулер в режиме транзакций.
 

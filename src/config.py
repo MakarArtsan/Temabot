@@ -26,6 +26,8 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # значения часто вставляют с телефона — лишний пробел по краям не должен ломать запуск
+        str_strip_whitespace=True,
     )
 
     # --- Telegram ---
@@ -115,6 +117,17 @@ class Settings(BaseSettings):
     WEB_BASE_URL: str = ""
     WEB_HOST: str = "0.0.0.0"
     WEB_PORT: int = 8080
+
+    @field_validator("BOT_USERNAME", mode="before")
+    @classmethod
+    def _bare_username(cls, v: Any) -> Any:
+        """Виджету входа нужно имя без «@» и без ссылки: @my_bot, t.me/my_bot → my_bot."""
+        if isinstance(v, str):
+            v = v.strip()
+            for prefix in ("https://", "http://", "t.me/", "telegram.me/", "@"):
+                if v.lower().startswith(prefix):
+                    v = v[len(prefix):]
+        return v
 
     @field_validator("TG_GROUP_ID", "OWNER_ID", "TG_API_ID", mode="before")
     @classmethod

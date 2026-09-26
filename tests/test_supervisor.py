@@ -318,3 +318,14 @@ async def test_broken_database_url_keeps_web_and_waits(
     assert started == [supervisor.SERVICE_MODULES["web"]], "без миграции и без bot/collector"
     assert "DATABASE_URL не разбирается" in caplog.text
     assert "secret" not in caplog.text
+
+
+def test_supabase_direct_host_gets_a_hint():
+    """Прямой хост Supabase — только IPv6; на хостинге это «Network is unreachable»."""
+    from src.db.pool import dsn_hint
+
+    direct = "postgresql://postgres:abc123@db.lyelliramcnsmqrmgxbe.supabase.co:5432/postgres"
+    pooler = "postgresql://postgres.x:abc123@aws-0-eu-west-2.pooler.supabase.com:5432/postgres"
+
+    assert "Session pooler" in (dsn_hint(direct) or "")
+    assert dsn_hint(pooler) is None

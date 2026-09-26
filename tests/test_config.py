@@ -148,3 +148,22 @@ def test_transaction_pooler_is_detected(dsn: str, expected: bool):
     from src.db.pool import uses_transaction_pooler
 
     assert uses_transaction_pooler(dsn) is expected
+
+
+@pytest.mark.parametrize("raw", ["@temabot", " temabot ", "https://t.me/temabot", "t.me/temabot"])
+def test_bot_username_is_normalized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls, raw: str
+):
+    """Виджет входа говорит «Username invalid», если имя пришло с @ или ссылкой."""
+    monkeypatch.setenv("BOT_USERNAME", raw)
+    assert settings_cls(_env_file=tmp_path / "absent.env").BOT_USERNAME == "temabot"
+
+
+def test_values_pasted_with_spaces_are_trimmed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, settings_cls
+):
+    monkeypatch.setenv("OWNER_ID", " 132036441 ")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-flash ")
+    loaded = settings_cls(_env_file=tmp_path / "absent.env")
+
+    assert loaded.OWNER_ID == 132036441 and loaded.LLM_MODEL == "deepseek-flash"
