@@ -495,3 +495,31 @@ def test_broken_token_gives_a_message_not_a_crash(
 
     assert response.status_code == 200
     assert "Не удалось подключить бота" in response.text
+
+
+def test_healthz_does_not_hang_on_unreachable_database(
+    client: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """Недоступная база не должна вешать проверку живости."""
+    import asyncio
+
+    async def hangs(*a: Any, **kw: Any) -> Any:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(cfg, "DATABASE_URL", "postgresql://nope")
+    monkeypatch.setattr(web_app.pool, "fetchval", hangs)
+    monkeypatch.setattr(web_app, "HEALTHZ_DB_TIMEOUT_SEC", 0.1)
+
+    assert client.get("/healthz").json() == {"status": "ok", "database": "fail"}
+
+
+def test_web_starts_without_touching_the_database(monkeypatch: pytest.MonkeyPatch):
+    """Порт должен открыться, даже если база недоступна."""
+    async def explode(*a: Any, **kw: Any) -> Any:
+        raise AssertionError("на старте к базе не ходим")
+
+    monkeypatch.setattr(cfg, "DATABASE_URL", "postgresql://nope")
+    monkeypatch.setattr(web_app.pool, "get_pool", explode)
+
+    with TestClient(web_app.app, base_url="https://testserver") as started:
+        assert started.get("/login").status_code == 200

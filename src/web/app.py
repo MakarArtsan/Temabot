@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -33,13 +34,17 @@ from src.web import auth
 
 log = logging.getLogger(__name__)
 
+HEALTHZ_DB_TIMEOUT_SEC = 5.0
+
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Пул соединений живёт столько же, сколько приложение."""
-    if cfg.DATABASE_URL:
-        await pool.get_pool(cfg.DATABASE_URL)
+    """Пул открывается лениво, при первом запросе к базе.
+
+    Если ждать базу на старте, недоступная база не даёт uvicorn открыть порт,
+    и хостинг считает запуск проваленным, хотя /healthz мог бы честно ответить.
+    """
     yield
     await pool.close_pool()
 
@@ -114,7 +119,8 @@ async def healthz() -> JSONResponse:
     database = "off"
     if cfg.DATABASE_URL:
         try:
-            await pool.fetchval("select 1")
+            # проверка живости не должна висеть минуту на недоступной базе
+            await asyncio.wait_for(pool.fetchval("select 1"), HEALTHZ_DB_TIMEOUT_SEC)
             database = "ok"
         except Exception:
             database = "fail"

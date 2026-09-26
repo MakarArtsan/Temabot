@@ -3,8 +3,8 @@
 `APP_ROLE=all` (по умолчанию). На Amvera это один проект: одни переменные,
 один деплой, один адрес. Внутри — маленький супервизор:
 
-1. накатывает схему БД (раньше это делал отдельный сервис bot);
-2. запускает bot, web и collector отдельными процессами;
+1. сразу запускает web — порт 80 отвечает через секунды, что бы ни было с базой;
+2. накатывает схему БД и запускает bot и collector отдельными процессами;
 3. упавший процесс перезапускает с растущей паузой, остальные при этом работают;
 4. по SIGTERM (остановка или обновление проекта) аккуратно гасит всех.
 
@@ -24,8 +24,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from src.config import Settings, cfg
+if TYPE_CHECKING:
+    from src.config import Settings
 
 log = logging.getLogger("supervisor")
 
@@ -40,6 +42,7 @@ RESTART_MIN_SEC = 5.0
 RESTART_MAX_SEC = 300.0
 STABLE_AFTER_SEC = 600.0    # проработал 10 минут — пауза перед перезапуском сбрасывается
 STOP_TIMEOUT_SEC = 15.0
+IDLE_REPORT_SEC = 300.0     # как часто напоминать в логе, почему ничего не запущено
 # Пулер Supabase в режиме сессий пускает не больше 15 клиентов на всю базу,
 # а процессов теперь три: делим лимит, если владелец не задал размер сам.
 POOL_SIZE_PER_SERVICE = 4
@@ -178,22 +181,28 @@ async def terminate(services: list[Service], grace_sec: float = STOP_TIMEOUT_SEC
         await asyncio.gather(*(p.wait() for p in running))
 
 
+async def _idle(stop: asyncio.Event, reason: str) -> None:
+    """Не завершаться, а ждать и напоминать о причине.
+
+    Если процесс контейнера сразу выходит, Amvera перезапускает его по кругу и
+    показывает «Ошибка развертывания» — а короткий лог при этом часто теряется.
+    Живой контейнер с понятной строкой в логе чинится гораздо быстрее.
+    """
+    while not stop.is_set():
+        log.error("%s", reason)
+        await _wait_or_stop(stop, IDLE_REPORT_SEC)
+
+
 async def supervise(
-    settings: Settings = cfg,
+    settings: Settings | None = None,
     *,
     stop: asyncio.Event | None = None,
     install_signals: bool = True,
 ) -> int:
-    plan = plan_services(settings)
-    for name, missing in plan.skipped.items():
-        log.warning(
-            "%s не запущен: не заданы %s. Добавь переменные и перезапусти приложение.",
-            name,
-            ", ".join(missing),
-        )
-    if not plan.run:
-        log.error("Запускать нечего — проверь переменные окружения (docs/SETUP.md)")
-        return 1
+    if settings is None:
+        from src.config import cfg
+
+        settings = cfg
 
     stop = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -202,24 +211,42 @@ async def supervise(
         loop.add_signal_handler(sig, stop.set)
 
     try:
-        env = child_env(settings)
-        if not await migrate(env, stop):
-            return 0
+        plan = plan_services(settings)
+        for name, missing in plan.skipped.items():
+            log.warning(
+                "%s не запущен: не заданы %s. Добавь переменные и перезапусти приложение.",
+                name,
+                ", ".join(missing),
+            )
+        if not plan.run:
+            await _idle(stop, "Запускать нечего — проверь переменные окружения (docs/SETUP.md)")
+            return 1
 
-        services = [
-            Service(
+        env = child_env(settings)
+        services = {
+            name: Service(
                 name=name,
                 argv=[sys.executable, "-m", SERVICE_MODULES[name]],
                 env={**env, "APP_ROLE": name},
             )
             for name in plan.run
-        ]
-        log.info("Запускаю: %s", ", ".join(plan.run))
-        tasks = [asyncio.create_task(run_service(s, stop)) for s in services]
+        }
+        tasks: list[asyncio.Task[None]] = []
+
+        # Админка — первой: она отвечает на /healthz и не ждёт базу, поэтому
+        # Amvera видит живой порт, даже пока схема накатывается или база недоступна
+        if "web" in services:
+            log.info("Запускаю: web")
+            tasks.append(asyncio.create_task(run_service(services["web"], stop)))
+
+        rest = [name for name in plan.run if name != "web"]
+        if rest and await migrate(env, stop):
+            log.info("Запускаю: %s", ", ".join(rest))
+            tasks += [asyncio.create_task(run_service(services[n], stop)) for n in rest]
 
         await stop.wait()
         log.info("Останавливаю сервисы")
-        await terminate(services)
+        await terminate(list(services.values()))
         await asyncio.gather(*tasks, return_exceptions=True)
         return 0
     finally:
@@ -227,10 +254,41 @@ async def supervise(
             loop.remove_signal_handler(sig)
 
 
+def _config_problems() -> str | None:
+    """Прочитать настройки заранее и описать ошибки по-человечески.
+
+    Значения в сообщение не попадают: среди них токены и пароли.
+    """
+    from pydantic import ValidationError
+
+    try:
+        from src.config import get_settings
+
+        get_settings()
+    except ValidationError as exc:
+        lines = [
+            f"  {'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
+        ]
+        return "Переменные окружения с неверным значением:\n" + "\n".join(lines)
+    return None
+
+
 def main() -> None:
     logging.basicConfig(
-        level=cfg.LOG_LEVEL, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+    problems = _config_problems()
+    if problems:
+        async def report() -> None:
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, stop.set)
+            await _idle(stop, problems)
+
+        asyncio.run(report())
+        sys.exit(1)
     sys.exit(asyncio.run(supervise()))
 
 

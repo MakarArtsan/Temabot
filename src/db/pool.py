@@ -9,6 +9,8 @@ import asyncpg
 
 from src.config import cfg
 
+CONNECT_TIMEOUT_SEC = 15
+
 _pool: asyncpg.Pool | None = None
 _lock = asyncio.Lock()
 
@@ -57,6 +59,9 @@ async def get_pool(dsn: str | None = None) -> asyncpg.Pool:
                 max_size=cfg.DB_POOL_SIZE,
                 init=_init_connection,
                 command_timeout=60,
+                # по умолчанию asyncpg ждёт подключения минуту — слишком долго,
+                # чтобы понять, что база недоступна
+                timeout=CONNECT_TIMEOUT_SEC,
                 **extra,
             )
     assert _pool is not None

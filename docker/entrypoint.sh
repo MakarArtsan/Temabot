@@ -14,18 +14,21 @@ if [ "$1" = "healthcheck" ]; then
     esac
 fi
 
-mkdir -p "${DATA_DIR:-/data}/media" "${DATA_DIR:-/data}/models"
+# Первая строка лога — сразу: если дальше что-то упадёт, будет видно, что контейнер жив
+echo "Запускаю роль: ${ROLE} ($(date -u '+%Y-%m-%d %H:%M:%S') UTC)"
+
+# Не роняем запуск, если постоянное хранилище смонтировано без прав на запись
+mkdir -p "${DATA_DIR:-/data}/media" "${DATA_DIR:-/data}/models" \
+    || echo "Внимание: не удалось создать каталоги в ${DATA_DIR:-/data}"
 
 # Файл сессии — это полный доступ к аккаунту (TZ §0)
 if [ -f "${TG_SESSION}" ]; then
     chmod 600 "${TG_SESSION}" || true
 fi
 
-echo "Запускаю роль: ${ROLE}"
-
 case "$ROLE" in
     all)
-        # Схему накатывает сам супервизор, до старта сервисов
+        # Схему накатывает сам супервизор; web стартует сразу, не дожидаясь базы
         exec python -m src.supervisor
         ;;
     collector)

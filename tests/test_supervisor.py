@@ -163,7 +163,7 @@ async def test_terminate_kills_the_stubborn_ones():
 
 # ---------------------------------------------------------------- целиком
 
-async def test_supervise_migrates_first_then_runs_services(
+async def test_supervise_migrates_before_bot_and_collector(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast: None
 ):
     marker = tmp_path / "order.txt"
@@ -199,12 +199,70 @@ async def test_supervise_migrates_first_then_runs_services(
 
     started = marker.read_text().split()
     assert code == 0
-    assert started[0] == "migrate", "сервисы стартуют только после схемы"
-    assert sorted(started[1:]) == ["bot", "collector", "web"]
-
-
-async def test_supervise_refuses_to_run_nothing(tmp_path: Path):
-    code = await supervisor.supervise(
-        settings(tmp_path, DATABASE_URL=""), stop=asyncio.Event(), install_signals=False
+    assert sorted(started) == ["bot", "collector", "migrate", "web"]
+    migrated = started.index("migrate")
+    assert started.index("bot") > migrated and started.index("collector") > migrated, (
+        "bot и collector стартуют только после схемы"
     )
-    assert code == 1
+
+
+async def test_supervise_with_nothing_to_run_waits_instead_of_crashlooping(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """Упавший сразу контейнер Amvera перезапускает по кругу, и лог теряется."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        supervisor.supervise(settings(tmp_path, DATABASE_URL=""), stop=stop,
+                             install_signals=False)
+    )
+    await asyncio.sleep(0.1)
+    assert not task.done(), "процесс жив, пока его не остановят"
+    stop.set()
+
+    assert await asyncio.wait_for(task, 5) == 1
+    assert "Запускать нечего" in caplog.text
+
+
+async def test_web_starts_even_when_database_is_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast: None
+):
+    """Порт 80 должен ответить, даже если схема не накатывается."""
+    started: list[str] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*argv: str, **kw: object):
+        module = argv[-1]
+        if module == supervisor.MIGRATE_MODULE:
+            return await real_exec(sys.executable, "-c", "import sys; sys.exit(1)", **kw)
+        started.append(module)
+        return await real_exec(sys.executable, "-c", "import time; time.sleep(60)", **kw)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        supervisor.supervise(settings(tmp_path), stop=stop, install_signals=False)
+    )
+    for _ in range(200):
+        if started:
+            break
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.2)
+    stop.set()
+    await asyncio.wait_for(task, 10)
+
+    assert started == [supervisor.SERVICE_MODULES["web"]], "bot и collector ждут схему"
+
+
+def test_config_errors_are_readable_and_hide_values(monkeypatch: pytest.MonkeyPatch):
+    from src import config
+
+    monkeypatch.setenv("TG_API_ID", "секрет-не-число")
+    config.get_settings.cache_clear()
+    try:
+        problems = supervisor._config_problems()
+    finally:
+        monkeypatch.delenv("TG_API_ID")
+        config.get_settings.cache_clear()
+
+    assert problems and "TG_API_ID" in problems
+    assert "секрет-не-число" not in problems
