@@ -168,7 +168,7 @@ async def on_digest(message: types.Message, command: CommandObject) -> None:
         if stored and stored.payload:
             # готовый дайджест собираем заново из сохранённой структуры,
             # кнопки берут id тем из БД
-            data = DigestData.from_dict(stored.payload)
+            data = DigestData.from_dict(stored.payload).titled(chat.title)
             items = await repo.get_digest_items(stored.id or 0, shown=True)
             by_thread = {row["thread_id"]: row["id"] for row in items}
             for topic in data.topics:

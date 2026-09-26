@@ -1,100 +1,111 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, badge, chart, empty %}
 {% block title %}Рейтинги{% endblock %}
+{% block head %}<script src="/static/vendor/chart.umd.min.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block h1 %}Рейтинги участников{% endblock %}
-{% block content %}
-<div class="card">
-  <form method="get" action="/ratings" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
-    <div>
-      <label>Группа</label>
-      <select name="chat" onchange="this.form.submit()">
-        {% for c in chats %}
-          <option value="{{ c.id }}" {{ 'selected' if chat and c.id == chat.id }}>
-            {{ c.title or c.tg_id }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <label>Период</label>
-      <select name="period" onchange="this.form.submit()">
-        {% for key, label in [('day','день'), ('week','неделя'), ('month','месяц')] %}
-          <option value="{{ key }}" {{ 'selected' if period_key == key }}>{{ label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <label>Сортировка</label>
-      <select name="sort" onchange="this.form.submit()">
-        {% for n in nominations %}
-          <option value="{{ n.key }}" {{ 'selected' if sort == n.key }}>{{ n.title }}</option>
-        {% endfor %}
-      </select>
-    </div>
-  </form>
-  <p class="muted">Период: {{ period.title }} ({{ period.date_from }} — {{ period.date_to }})</p>
-</div>
+{% block lead %}<p class="lead">{{ period.title|capitalize }}: {{ period.date_from.strftime('%d.%m') }} — {{ period.date_to.strftime('%d.%m') }}. Считаются каждый вечер в 23:40.</p>{% endblock %}
 
-<div class="card">
-  <h2 style="margin-top:0">Номинации</h2>
-  <div class="row">
-    {% for n in nominations %}
-      {% if tops[n.key] %}
-        <div class="card" style="flex:1 1 240px">
-          <strong>{{ n.title }}</strong>
-          {% for row, value in tops[n.key] %}
-            <div>
-              {{ ['🥇','🥈','🥉'][loop.index0] }}
-              {{ row.name or row.tg_user_id }} —
-              {% if n.key == 'useful' %}{{ scale.get(row.tg_user_id, 0) }} из 100
-              {% else %}{{ '%g'|format(value) }} {{ n.unit }}{% endif %}
-            </div>
-          {% endfor %}
-        </div>
-      {% endif %}
+{% block content %}
+<form method="get" action="/ratings" class="btn-row" style="margin-bottom:14px">
+  {% if chats|length > 1 %}
+    <select name="chat" onchange="this.form.submit()" aria-label="Группа" style="max-width:280px">
+      {% for c in chats %}<option value="{{ c.id }}" {{ 'selected' if chat and c.id == chat.id }}>{{ chat_name(c) }}</option>{% endfor %}
+    </select>
+  {% endif %}
+  <div class="seg" role="radiogroup" aria-label="Период">
+    {% for key, label in [('day','День'), ('week','Неделя'), ('month','Месяц')] %}
+      <a class="{{ 'on' if period_key == key }}" href="/ratings?period={{ key }}{% if chat %}&chat={{ chat.id }}{% endif %}&sort={{ sort }}">{{ label }}</a>
     {% endfor %}
   </div>
+</form>
+
+{% if not rows %}
+  <div class="card">{{ empty('За этот период данных нет', 'Пересчёт идёт каждый вечер в 23:40. Можно запустить вручную внизу страницы.', 'trophy') }}</div>
+{% else %}
+<div class="grid main-side">
+  <section class="card">
+    <div class="card-head"><div><h2>Самые полезные</h2><p class="muted small">из 100 — место внутри группы за период</p></div></div>
+    {{ chart('useful', 'bars', leaders.spec, ['Участник', 'Из 100'], leaders.rows, 'Самые полезные участники', tall=true) }}
+  </section>
+  <section class="card">
+    <div class="card-head"><h2>Как считается полезность</h2></div>
+    <p class="small muted">Больше всего весит вклад в сильные обсуждения дня: начал тему, дал главный
+      ответ, закрыл чужой вопрос — и чем выше оценка темы, тем больше вклад. Добавляют реакции и то,
+      как часто человеку отвечают. Короткие реплики и флуд почти ничего не приносят.</p>
+    <p class="small muted">Участники группы видят только «хорошие» номинации — «Сова» и «Цепляет» остаются вам.
+      Кто написал боту /optout, в рейтингах для группы не показывается.</p>
+  </section>
 </div>
 
-<div class="card">
-  <h2 style="margin-top:0">Все участники</h2>
-  <table>
-    <tr>
-      <th>Участник</th><th>Полезность</th><th>Сообщений</th><th>Слов</th>
-      <th>Ответов получил</th><th>Реакций</th><th>Тем начал</th><th>Ответил</th>
-      <th>Ссылок</th><th>Голос, мин</th><th>Ночных</th>
-    </tr>
-    {% for row in rows %}
+<h2 class="section" style="margin-bottom:10px">Номинации</h2>
+<div class="medals">
+  {% for n in nominations %}
+    {% if tops[n.key] %}
+      <section class="card medal-card">
+        <h3>{{ n.title }}</h3>
+        {% for row, value in tops[n.key] %}
+          <div class="medal-row">
+            <span class="place">{{ ['🥇','🥈','🥉'][loop.index0] }}</span>
+            <span class="who">{{ row.name or row.tg_user_id }}</span>
+            <span class="val">{% if n.key == 'useful' %}{{ scale.get(row.tg_user_id, 0) }} из 100{% else %}{{ '%g'|format(value) }} {{ n.unit }}{% endif %}</span>
+          </div>
+        {% endfor %}
+      </section>
+    {% endif %}
+  {% endfor %}
+</div>
+
+<section class="card section">
+  <div class="card-head">
+    <h2>Все участники</h2>
+    <form method="get" action="/ratings" class="btn-row">
+      <input type="hidden" name="period" value="{{ period_key }}">
+      {% if chat %}<input type="hidden" name="chat" value="{{ chat.id }}">{% endif %}
+      <label class="small muted" for="sort">Сортировать</label>
+      <select id="sort" name="sort" onchange="this.form.submit()" style="max-width:220px;min-height:36px;padding:6px 32px 6px 10px">
+        {% for n in nominations %}<option value="{{ n.key }}" {{ 'selected' if sort == n.key }}>{{ n.title }}</option>{% endfor %}
+      </select>
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table class="sticky-first">
       <tr>
-        <td>{{ row.name or row.tg_user_id }}</td>
-        <td><strong>{{ scale.get(row.tg_user_id, 0) }}</strong></td>
-        <td>{{ row.messages }}</td>
-        <td>{{ row.words }}</td>
-        <td>{{ row.replies_got }}</td>
-        <td>{{ row.reactions_got }}</td>
-        <td>{{ row.threads_started }}</td>
-        <td>{{ row.questions_answered }}</td>
-        <td>{{ row.links }}</td>
-        <td>{{ (row.voice_sec / 60) | round(1) }}</td>
-        <td>{{ row.night_msgs }}</td>
+        <th>Участник</th><th class="num">Польза</th><th class="num">Сообщ.</th><th class="num">Слов</th>
+        <th class="num">Ответили ему</th><th class="num">Реакций</th><th class="num">Начал тем</th>
+        <th class="num">Помог</th><th class="num">Ссылок</th><th class="num">Голос, мин</th><th class="num">Ночью</th>
       </tr>
-    {% else %}
-      <tr><td colspan="11" class="muted">За период данных нет.
-        Пересчёт идёт в 23:40, либо запусти вручную ниже.</td></tr>
-    {% endfor %}
-  </table>
-  <p class="muted">Скрытые по /optout здесь показаны, но в бот-рейтинги и в «Героев дня»
-    не попадают. Скрыть участника можно на странице «Участники».</p>
-</div>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.name or row.tg_user_id }}</td>
+          <td class="num"><b>{{ scale.get(row.tg_user_id, 0) }}</b></td>
+          <td class="num">{{ row.messages }}</td>
+          <td class="num">{{ row.words }}</td>
+          <td class="num">{{ row.replies_got }}</td>
+          <td class="num">{{ row.reactions_got }}</td>
+          <td class="num">{{ row.threads_started }}</td>
+          <td class="num">{{ row.questions_answered }}</td>
+          <td class="num">{{ row.links }}</td>
+          <td class="num">{{ ((row.voice_sec or 0) / 60)|round(1) }}</td>
+          <td class="num">{{ row.night_msgs }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  </div>
+  <p class="muted small" style="margin-top:10px">Здесь видны и скрывшиеся по /optout — только вам.
+    Скрыть участника вручную можно на странице «Участники».</p>
+</section>
+{% endif %}
 
-<div class="card">
-  <form method="post" action="/ratings/recalc">
+<section class="card section">
+  <div class="card-head"><div><h2>Пересчитать</h2><p class="muted small">Можно перегнать любой период заново — результат тот же, дублей не будет.</p></div></div>
+  <form method="post" action="/ratings/recalc" class="inline-form">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <input type="hidden" name="chat_id" value="{{ chat.id if chat else 0 }}">
-    <label>Пересчитать за последние дни</label>
-    <div style="display:flex;gap:8px">
-      <input type="number" name="days" value="1" min="1" max="90" style="max-width:120px">
-      <button type="submit">Пересчитать</button>
+    <div>
+      <label class="field" for="days">За последние дни</label>
+      <input id="days" type="number" name="days" value="1" min="1" max="90">
     </div>
-    <p class="muted">Пересчёт идемпотентный — любой день можно перегнать заново.</p>
+    <button class="btn ghost" type="submit">{{ icon('refresh', 'sm') }}Пересчитать</button>
   </form>
-</div>
+</section>
 {% endblock %}

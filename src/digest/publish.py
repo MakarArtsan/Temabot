@@ -62,7 +62,7 @@ def group_preview(digest_payload: dict[str, Any], chat: Chat) -> list[str]:
     """Как дайджест будет выглядеть в группе — для предпросмотра в админке."""
     if not digest_payload:
         return []
-    data = DigestData.from_dict(digest_payload)
+    data = DigestData.from_dict(digest_payload).titled(chat.title)
     return group_parts(data, ratings_public=ratings_are_public(chat))
 
 
@@ -97,7 +97,7 @@ async def publish_digest(bot: Any, digest_id: int, *, auto: bool = False) -> Pub
     if not digest.payload:
         return PublishResult(False, "У дайджеста нет сохранённой структуры — пересобери его")
 
-    data = DigestData.from_dict(digest.payload)
+    data = DigestData.from_dict(digest.payload).titled(chat.title)
     if is_empty(data):
         return PublishResult(False, "За день ничего заметного — публиковать нечего", skipped=True)
     if not await repo.claim_digest_publication(digest_id):

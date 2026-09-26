@@ -1,19 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Q&amp;A{% endblock %}
-{% block h1 %}Вопросы и ответы{% endblock %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Вопросы боту{% endblock %}
+{% block h1 %}Вопросы боту{% endblock %}
+{% block lead %}<p class="lead">Что вы спрашивали у бота командой /ask или просто текстом в личке — и что он ответил по истории группы.</p>{% endblock %}
 {% block content %}
-<div class="card">
+<section class="card">
   {% for row in rows %}
-    <div class="topic">
-      <div class="muted">{{ row.created_at.strftime('%d.%m.%Y %H:%M') if row.created_at }}</div>
-      <strong>{{ row.question }}</strong>
-      <div style="margin-top:4px">{{ row.answer }}</div>
-      {% if row.sources %}
-        <div class="muted">источники: {{ row.sources|join(', ') }}</div>
-      {% endif %}
-    </div>
+    <article class="topic">
+      <div class="head">
+        <h3>{{ row.question }}</h3>
+        <span class="muted small nowrap">{{ row.created_at|local_time if row.created_at }}</span>
+      </div>
+      <p class="takeaway" style="white-space:pre-wrap">{{ row.answer }}</p>
+      {% if row.sources %}<div class="meta"><span>{{ icon('link', 'sm') }}источников: {{ row.sources|length }}</span></div>{% endif %}
+    </article>
   {% else %}
-    <p class="muted">Вопросов пока не задавали.</p>
+    {{ empty('Вопросов пока не было', 'Спросите бота в личке, например: «что решили про конференцию?»', 'chat') }}
   {% endfor %}
-</div>
+</section>
 {% endblock %}

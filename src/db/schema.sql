@@ -206,6 +206,28 @@ end $$;
 alter table digests add column if not exists published_at timestamptz;
 alter table digests add column if not exists published_msg_ids bigint[];
 
+-- Страница для участников группы (решение владельца, см. TZ §9): только чтение,
+-- вход через Telegram, пускает лишь тех, кто состоит в группе.
+-- off — закрыта (по умолчанию), digests — дайджесты, all — дайджесты и рейтинги.
+alter table chats add column if not exists portal text default 'off';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'chats_portal_check') then
+    alter table chats add constraint chats_portal_check
+      check (portal in ('off', 'digests', 'all'));
+  end if;
+end $$;
+
+-- Кто состоит в группе — по данным коллектора. Запасной источник для проверки
+-- доступа к странице участников, если Bot API не может ответить сам. Только id,
+-- без имён и прочего: для проверки доступа этого достаточно.
+create table if not exists chat_members (
+  chat_id     bigint references chats(id) on delete cascade,
+  tg_user_id  bigint not null,
+  seen_at     timestamptz default now(),
+  primary key (chat_id, tg_user_id)
+);
+
 -- ------------------------------------------------- приватность (TZ §9)
 
 -- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями
@@ -222,7 +244,7 @@ begin
   foreach t in array array[
     'chats', 'authors', 'copier_blocklist', 'settings', 'llm_usage', 'messages',
     'chunks', 'digests', 'digest_items', 'feedback', 'qa_log', 'thread_contrib',
-    'author_stats_daily', 'state'
+    'author_stats_daily', 'state', 'chat_members'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;

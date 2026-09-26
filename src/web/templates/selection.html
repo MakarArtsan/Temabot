@@ -1,67 +1,117 @@
 {% extends "base.html" %}
-{% block title %}Отбор{% endblock %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Отбор тем{% endblock %}
 {% block h1 %}Отбор тем{% endblock %}
+{% block lead %}<p class="lead">Как бот решает, какие обсуждения попадут в дайджест. Каждая тема получает оценку от 0 до 1 — в дайджест идут те, что не ниже порога.</p>{% endblock %}
+
 {% block content %}
 {% if not chat %}
-  <div class="card"><p class="muted">Сначала должна появиться хотя бы одна группа.</p></div>
+  <div class="card">{{ empty('Групп пока нет', 'Сначала должна появиться хотя бы одна группа.', 'groups') }}</div>
 {% else %}
-<div class="card">
-  <form method="get" action="/selection">
-    <label>Группа</label>
-    <select name="chat" onchange="this.form.submit()">
-      {% for c in chats %}
-        <option value="{{ c.id }}" {{ 'selected' if c.id == chat.id }}>{{ c.title or c.tg_id }}</option>
-      {% endfor %}
-    </select>
-  </form>
-</div>
+
+{% if chats|length > 1 %}
+<form method="get" action="/selection" class="card">
+  <label class="field" for="chat-pick">Группа</label>
+  <select id="chat-pick" name="chat" onchange="this.form.submit()">
+    {% for c in chats %}<option value="{{ c.id }}" {{ 'selected' if c.id == chat.id }}>{{ chat_name(c) }}</option>{% endfor %}
+  </select>
+</form>
+{% else %}
+<p class="eyebrow">{{ chat_name(chat) }}</p>
+{% endif %}
 
 <form method="post" action="/selection/{{ chat.id }}">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
-  <div class="card">
-    <label>Профиль интересов — он уходит в промпт оценки</label>
-    <textarea name="interests_profile"
-              placeholder="интересно: AI-видео, цены, инструменты; неинтересно: политика, флуд">{{ profile }}</textarea>
+
+  <section class="card">
+    <div class="card-head"><h2>О чём эта группа и что вам в ней важно</h2></div>
+    <p class="muted small" style="margin-top:-4px">
+      Напишите простыми словами — как объяснили бы помощнику. Этот текст получает модель,
+      когда разбирает каждое обсуждение дня: с ним она пишет выводы и ставит теме оценку
+      «совпадение с интересами». Никуда больше текст не уходит и в дайджесте не показывается.
+    </p>
+    <textarea name="interests_profile" rows="5" aria-label="Интересы"
+              placeholder="Например: интересно — генерация видео и картинок, цены сервисов, рабочие приёмы и настройки. Неинтересно — политика, приветствия, флуд.">{{ profile }}</textarea>
+    <details class="more">
+      <summary>{{ icon('info', 'sm') }}Что будет, если оставить пустым?</summary>
+      <p class="small muted">Отбор всё равно работает — по пользе, конкретике и живости обсуждения.
+        Но оценка «совпадение с интересами» будет почти случайной, поэтому её вес лучше уменьшить.</p>
+    </details>
+  </section>
+
+  <div class="grid two">
+    <section class="card">
+      <div class="card-head"><div><h2>Что ценить</h2><p class="muted small">Чем правее ползунок, тем сильнее это влияет на оценку темы</p></div></div>
+      {% for s in weight_settings %}
+        <div class="slider">
+          <label class="name" for="w-{{ s.key }}">{{ s.title }}</label>
+          <output id="out-{{ s.key }}">{{ '%.2f'|format(weights[s.key]) }}</output>
+          <input id="w-{{ s.key }}" type="range" name="{{ s.key }}" min="0" max="1" step="0.01"
+                 value="{{ weights[s.key] }}" data-output="out-{{ s.key }}">
+          <span class="field-hint">{{ s.hint }}</span>
+        </div>
+      {% endfor %}
+    </section>
+
+    <div class="stack">
+      <section class="card">
+        <div class="card-head"><div><h2>Что наказывать</h2><p class="muted small">Сколько отнять от оценки темы</p></div></div>
+        {% for s in penalty_settings %}
+          <div class="slider">
+            <label class="name" for="p-{{ s.key }}">{{ s.title }}</label>
+            <output id="out-p-{{ s.key }}">{{ '%.2f'|format(penalties[s.key]) }}</output>
+            <input id="p-{{ s.key }}" type="range" name="penalty_{{ s.key }}" min="0" max="1" step="0.01"
+                   value="{{ penalties[s.key] }}" data-output="out-p-{{ s.key }}">
+            <span class="field-hint">{{ s.hint }}</span>
+          </div>
+        {% endfor %}
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Сколько тем показывать</h2></div>
+        <div class="slider">
+          <label class="name" for="threshold">Строгость отбора</label>
+          <output id="out-threshold">{{ '%.2f'|format(threshold) }}</output>
+          <input id="threshold" type="range" name="threshold" min="0" max="1" step="0.01"
+                 value="{{ threshold }}" data-output="out-threshold">
+          <span class="field-hint">Минимальная оценка, чтобы тема попала в дайджест. Выше — меньше тем, но только сильные.
+            Сейчас по умолчанию {{ '%.2f'|format(default_threshold) }}.</span>
+        </div>
+        <div class="slider">
+          <label class="name" for="top_n">Не больше тем за день</label>
+          <output id="out-top_n">{{ top_n }}</output>
+          <input id="top_n" type="range" name="top_n" min="1" max="20" step="1"
+                 value="{{ top_n }}" oninput="document.getElementById('out-top_n').textContent=this.value">
+          <span class="field-hint">Даже если порог прошло больше — в дайджест попадут самые сильные.</span>
+        </div>
+      </section>
+    </div>
   </div>
 
-  <div class="grid2">
-    <div class="card">
-      <h2 style="margin-top:0">Веса</h2>
-      {% for key, label in [('w_eng','вовлечённость'), ('w_use','применимость'),
-                            ('w_spec','конкретика'), ('w_rel','релевантность'),
-                            ('w_nov','новизна'), ('w_own','мои пометки')] %}
-        <label>{{ label }} — <code>{{ key }}</code></label>
-        <input type="number" step="0.01" min="0" max="2" name="{{ key }}" value="{{ weights[key] }}">
-      {% endfor %}
-    </div>
-    <div class="card">
-      <h2 style="margin-top:0">Штрафы и порог</h2>
-      {% for key, label in [('drama','склоки'), ('muted_author','заглушённые авторы'),
-                            ('repeat','повтор вчерашней темы')] %}
-        <label>{{ label }}</label>
-        <input type="number" step="0.01" min="0" max="1" name="penalty_{{ key }}" value="{{ penalties[key] }}">
-      {% endfor %}
-      <label>Порог попадания в дайджест</label>
-      <input type="number" step="0.01" min="0" max="2" name="threshold" value="{{ threshold }}">
-      <label>Максимум тем в дайджесте</label>
-      <input type="number" min="1" max="20" name="top_n" value="{{ top_n }}">
-    </div>
+  <div class="btn-row" style="margin:4px 0 22px">
+    <button class="btn" type="submit">{{ icon('check', 'sm') }}Сохранить</button>
+    <span class="muted small">Действует со следующей сборки дайджеста.</span>
   </div>
-  <button type="submit">Сохранить</button>
 </form>
 
-<div class="card" style="margin-top:16px">
-  <h2 style="margin-top:0">Прогнать на вчера</h2>
-  <p class="muted">Соберёт дайджест с текущими настройками и покажет результат.
-    Ничего не отправляет и не перезаписывает сохранённый дайджест.</p>
-  <form hx-post="/selection/{{ chat.id }}/preview" hx-target="#preview" hx-indicator="#wait">
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Проверить на прошлом дне</h2>
+      <p class="muted small">Соберёт дайджест с сохранёнными настройками и покажет, какие темы прошли.
+        Ничего не отправляет и не заменяет уже сохранённый дайджест.</p>
+    </div>
+  </div>
+  <form hx-post="/selection/{{ chat.id }}/preview" hx-target="#preview" hx-indicator="#wait" class="inline-form">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
-    <label>День</label>
-    <input type="text" name="day" value="{{ yesterday }}" style="max-width:200px">
-    <p><button type="submit">Прогнать</button>
-       <span id="wait" class="htmx-indicator muted">считаю…</span></p>
+    <div>
+      <label class="field" for="preview-day">День</label>
+      <input id="preview-day" type="date" name="day" value="{{ yesterday }}">
+    </div>
+    <button class="btn" type="submit">{{ icon('play', 'sm') }}Прогнать</button>
+    <span id="wait" class="htmx-indicator muted small">Считаю — это до минуты…</span>
   </form>
-  <div id="preview"></div>
-</div>
+  <div id="preview" style="margin-top:14px"></div>
+</section>
 {% endif %}
 {% endblock %}

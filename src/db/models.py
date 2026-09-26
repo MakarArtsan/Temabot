@@ -8,6 +8,7 @@ from typing import Any
 
 CopierMode = str  # allow | deny | ask
 PublishMode = str  # off | manual | auto — публикация дайджеста в саму группу
+PortalMode = str  # off | digests | all — страница для участников группы
 ContribRole = str  # initiator | key | answerer
 
 
@@ -33,6 +34,7 @@ class Chat:
     digest: bool = False
     copier: CopierMode = "ask"
     publish: PublishMode = "off"
+    portal: PortalMode = "off"
     digest_time: time | None = None
     retention_days: int = 365
     settings: dict[str, Any] = field(default_factory=dict)
@@ -49,6 +51,7 @@ class Chat:
             digest=row["digest"],
             copier=row["copier"],
             publish=row.get("publish") or "off",
+            portal=row.get("portal") or "off",
             digest_time=row["digest_time"],
             retention_days=row["retention_days"],
             settings=_as_dict(row["settings"]),

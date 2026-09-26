@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f2ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="same-origin">
+  <title>{% block title %}{% endblock %} · Temabot</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%232a78d6'/%3E%3Cpath d='M9 10.5A2 2 0 0 1 11 8.5h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6.5L10.5 23v-3.5A1.5 1.5 0 0 1 9 18z' fill='none' stroke='white' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_version }}">
+  <script src="/static/vendor/htmx.min.js?v={{ asset_version }}" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% include "_icons.html" %}
+{% block shell %}{% endblock %}
+<script src="/static/app.js?v={{ asset_version }}" defer></script>
+</body>
+</html>

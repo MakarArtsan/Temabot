@@ -1,0 +1,20 @@
+{% from "_ui.html" import icon %}
+{% set name = chat_name(chat) %}
+<div class="group-hero">
+  <div class="avatar" aria-hidden="true">{{ name[:1]|upper }}</div>
+  <div style="min-width:0">
+    <h1 style="overflow-wrap:anywhere">{{ name }}</h1>
+    <p class="muted small" style="margin:4px 0 0">Дайджесты группы — только для её участников</p>
+  </div>
+</div>
+{% if is_owner and chat.portal == 'off' %}
+  <div class="note accent">{{ icon('eye') }}<p>Так страница будет выглядеть для участников. Сейчас она <b>закрыта</b> —
+    видите только вы. Открыть можно в <a href="/groups">«Группах»</a>.</p></div>
+{% elif is_owner and chat.portal == 'digests' %}
+  <div class="note accent">{{ icon('eye') }}<p>Участники видят только дайджесты. Рейтинги здесь видите только вы —
+    открыть их можно в <a href="/groups">«Группах»</a>.</p></div>
+{% endif %}
+<nav class="seg" aria-label="Разделы группы" style="margin-bottom:16px">
+  <a class="{{ 'on' if tab == 'digests' }}" href="/g/{{ chat.id }}">{{ icon('digest', 'sm') }}Дайджесты</a>
+  {% if ratings_visible %}<a class="{{ 'on' if tab == 'ratings' }}" href="/g/{{ chat.id }}/ratings">{{ icon('trophy', 'sm') }}Рейтинги</a>{% endif %}
+</nav>

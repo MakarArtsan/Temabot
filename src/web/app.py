@@ -1,11 +1,14 @@
 """Веб-админка: FastAPI + Jinja2 + HTMX + Chart.js (TZ §4.9).
 
-Единственная публичная страница — вход. Всё остальное закрыто зависимостью
-`require_owner`: в админке лежит содержимое закрытых групп (TZ §9).
+Публичны только вход и проверка живости. Админка закрыта зависимостью
+`require_owner`: в ней лежит содержимое закрытых групп (TZ §9). Страница
+участников (`/g`, src/web/portal.py) — только чтение и только для тех, кто
+состоит в группе, где её открыл владелец.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -17,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.config import cfg
@@ -30,13 +34,15 @@ from src.digest.publish import (
     unpublish_digest,
 )
 from src.digest.render import deeplink
-from src.web import auth
+from src.web import auth, labels, membership
 
 log = logging.getLogger(__name__)
 
 HEALTHZ_DB_TIMEOUT_SEC = 5.0
+WEB_DIR = Path(__file__).parent
+STATIC_DIR = WEB_DIR / "static"
 
-TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -57,6 +63,31 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+# стили, скрипты и библиотеки лежат в репозитории: страница не зависит от CDN
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next: Callable[..., Any]) -> Response:
+    """Страницы не встраиваются в чужие сайты и не отдают адрес наружу по ссылкам."""
+    response: Response = await call_next(request)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if not request.url.path.startswith("/static/"):
+        # в админке и на странице участников — содержимое закрытой группы
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+def _asset_version() -> str:
+    """Меняется вместе со стилями и скриптами — браузер не держит старые."""
+    digest = hashlib.sha256()
+    for name in ("app.css", "app.js"):
+        path = STATIC_DIR / name
+        if path.exists():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
 
 
 def _local_time(value: datetime | None) -> str:
@@ -65,8 +96,79 @@ def _local_time(value: datetime | None) -> str:
     return value.astimezone(ZoneInfo(cfg.TZ)).strftime("%d.%m %H:%M")
 
 
-TEMPLATES.env.globals["deeplink"] = deeplink
-TEMPLATES.env.globals["publish_labels"] = PUBLISH_LABELS
+def chat_name(chat: Any) -> str:
+    """Название группы; пока оно неизвестно — понятная замена вместо голого id."""
+    if chat is None:
+        return "Группа"
+    get = chat.get if isinstance(chat, dict) else lambda key: getattr(chat, key, None)
+    title = (get("title") or "").strip()
+    if title:
+        return title
+    tg_id = get("tg_id")
+    return f"Группа {tg_id}" if tg_id else "Группа"
+
+
+def plural(n: Any, one: str, few: str, many: str) -> str:
+    """1 тема, 2 темы, 5 тем."""
+    try:
+        value = abs(int(n))
+    except (TypeError, ValueError):
+        return many
+    if 11 <= value % 100 <= 14:
+        return many
+    if value % 10 == 1:
+        return one
+    if 2 <= value % 10 <= 4:
+        return few
+    return many
+
+
+def num(value: Any) -> str:
+    """12 345 — с узким пробелом, как принято в русском тексте."""
+    try:
+        return f"{int(value):,}".replace(",", "\u202f")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def money(value: Any) -> str:
+    amount = float(value or 0)
+    if amount == 0:
+        return "$0"
+    if amount < 0.01:
+        return "< $0.01"
+    return f"${amount:,.2f}".replace(",", "\u202f")
+
+
+WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+MONTHS_SHORT = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+
+
+def cost_of(tokens_in: Any, tokens_out: Any) -> float:
+    """Оценка расходов на модель по ценам из настроек (за миллион токенов)."""
+    return (
+        float(tokens_in or 0) / 1e6 * cfg.LLM_PRICE_IN
+        + float(tokens_out or 0) / 1e6 * cfg.LLM_PRICE_OUT
+    )
+
+
+TEMPLATES.env.globals.update(
+    deeplink=deeplink,
+    publish_labels=PUBLISH_LABELS,
+    portal_labels=labels.PORTAL,
+    copier_labels=labels.COPIER,
+    feature_labels=labels.FEATURES,
+    weight_settings=labels.WEIGHTS,
+    penalty_settings=labels.PENALTIES,
+    kind_label=lambda kind: labels.KINDS.get(str(kind or "other"), labels.KINDS["other"]),
+    chat_name=chat_name,
+    plural=plural,
+    num=num,
+    money=money,
+    weekday=lambda day: WEEKDAYS[day.weekday()],
+    month_short=lambda day: MONTHS_SHORT[day.month - 1],
+    asset_version=_asset_version(),
+)
 TEMPLATES.env.filters["local_time"] = _local_time
 
 
@@ -91,9 +193,16 @@ async def with_bot(action: Callable[[Any], Awaitable[PublishResult]]) -> Publish
         await bot.session.close()
 
 
+def portal_url() -> str:
+    """Ссылка на страницу участников — её владелец отправляет в группу сам."""
+    base = cfg.WEB_BASE_URL.rstrip("/")
+    return f"{base}/g" if base else "/g"
+
+
 def render(request: Request, name: str, context: dict[str, Any]) -> HTMLResponse:
     session = auth.current_user(request)
     context.setdefault("csrf", (session or {}).get("csrf", ""))
+    context.setdefault("portal_url", portal_url())
     return TEMPLATES.TemplateResponse(request, name, context)
 
 
@@ -101,11 +210,23 @@ def local_today() -> date_type:
     return datetime.now(ZoneInfo(cfg.TZ)).date()
 
 
+def _is_portal(path: str) -> bool:
+    return path == "/g" or path.startswith("/g/")
+
+
 @app.exception_handler(HTTPException)
 async def on_http_error(request: Request, exc: HTTPException) -> Response:
     """Неавторизованного уводим на вход, а не показываем голую ошибку."""
     if exc.status_code == 401:
         return RedirectResponse("/login", status_code=303)
+    if _is_portal(request.url.path) and exc.status_code in (403, 404):
+        viewer = auth.current_viewer(request)
+        return TEMPLATES.TemplateResponse(
+            request,
+            "portal/denied.html",
+            {"is_owner": auth.session_uid(viewer) == cfg.OWNER_ID},
+            status_code=404,
+        )
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
 
@@ -133,6 +254,9 @@ async def healthz() -> JSONResponse:
 async def login_page(request: Request, error: str | None = None) -> HTMLResponse:
     if auth.current_user(request) is not None:
         return RedirectResponse("/", status_code=303)  # type: ignore[return-value]
+    if auth.current_viewer(request) is not None and not error:
+        # участник уже вошёл — ему сюда, а не в админку
+        return RedirectResponse("/g", status_code=303)  # type: ignore[return-value]
     return TEMPLATES.TemplateResponse(
         request,
         "login.html",
@@ -154,11 +278,27 @@ async def telegram_callback(request: Request) -> Response:
         log.warning("Неудачный вход в админку: %s", exc)
         return RedirectResponse(f"/login?error={exc}", status_code=303)
 
+    target = "/"
     if user_id != cfg.OWNER_ID:
-        log.warning("Попытка входа в админку от %s", user_id)
-        return RedirectResponse("/login?error=Эта админка не для вас", status_code=303)
+        # не владелец — может быть участником группы с открытой страницей
+        try:
+            allowed = await membership.visible_chats(user_id)
+        except Exception:
+            log.exception("Не удалось проверить доступ %s", user_id)
+            return RedirectResponse(
+                "/login?error=Сейчас не получается проверить доступ, попробуйте позже",
+                status_code=303,
+            )
+        if not allowed:
+            log.info("Вход без доступа: %s не состоит в открытых группах", user_id)
+            return RedirectResponse(
+                "/login?error=Страница открыта только участникам группы. "
+                "Если вы только что вступили — попробуйте через пару минут.",
+                status_code=303,
+            )
+        target = "/g"
 
-    response = RedirectResponse("/", status_code=303)
+    response = RedirectResponse(target, status_code=303)
     response.set_cookie(
         auth.COOKIE_NAME,
         auth.issue_session(user_id),
@@ -181,6 +321,8 @@ async def logout() -> Response:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, _: dict = Depends(auth.require_owner)) -> HTMLResponse:
+    from src.web.portal import daily_series
+
     stats = await repo.get_collection_stats()
     per_day = await repo.messages_per_day(days=30)
     tokens = await repo.tokens_per_day(days=30)
@@ -188,25 +330,29 @@ async def dashboard(request: Request, _: dict = Depends(auth.require_owner)) -> 
     digests = await repo.list_recent_digests(limit=5)
 
     today = local_today()
-    tokens_today = next(
-        (t for t in tokens if t["day"] == today), {"tokens_in": 0, "tokens_out": 0}
-    )
-    month_in = sum(int(t["tokens_in"]) for t in tokens)
-    month_out = sum(int(t["tokens_out"]) for t in tokens)
+    counts = {row["day"]: int(row["count"]) for row in per_day}
+    costs = {t["day"]: round(cost_of(t["tokens_in"], t["tokens_out"]), 4) for t in tokens}
 
+    now = datetime.now(ZoneInfo(cfg.TZ))
     return render(
         request,
         "dashboard.html",
         {
             "active": "dashboard",
             "stats": stats,
-            "per_day": per_day,
-            "tokens": tokens,
-            "tokens_today": tokens_today,
-            "month_cost": month_in / 1e6 * 0.028 + month_out / 1e6 * 0.42,
+            "totals": {
+                "messages": sum(counts.values()),
+                "today": counts.get(today, 0),
+                "cost": sum(costs.values()),
+                "cost_today": costs.get(today, 0.0),
+            },
+            "activity": daily_series(counts, today, 30),
+            "costs": daily_series(costs, today, 30, unit="usd", fmt=money),
+            "price_note": f"${cfg.LLM_PRICE_IN:g} / ${cfg.LLM_PRICE_OUT:g} за миллион токенов",
             "pending_media": await repo.pending_media_count(),
-            "states": states,
+            "processes": labels.describe_states(states, now),
             "digests": digests,
+            "chats": await repo.list_chats(),
         },
     )
 
@@ -244,6 +390,13 @@ async def groups_update(
         if value not in PUBLISH_MODES:
             raise HTTPException(400, "Недопустимый режим публикации")
         await repo.set_chat_flags(chat_tg_id, publish=value)
+    elif field == "portal":
+        # страница участников: закрыта / дайджесты / дайджесты и рейтинги
+        if value not in labels.PORTAL_MODES:
+            raise HTTPException(400, "Недопустимый режим страницы участников")
+        changed = await repo.set_chat_flags(chat_tg_id, portal=value)
+        if changed is not None:
+            membership.forget(changed.id)
     elif field == "ratings_publish":
         current = await repo.get_chat_by_tg_id(chat_tg_id)
         if current is None:
@@ -296,6 +449,7 @@ async def selection_page(
             "weights": weights,
             "penalties": penalties,
             "threshold": settings.get("threshold", DEFAULT_THRESHOLD),
+            "default_threshold": DEFAULT_THRESHOLD,
             "top_n": settings.get("top_n", DEFAULT_TOP_N),
             "yesterday": local_today() - timedelta(days=1),
         },
@@ -310,18 +464,21 @@ async def selection_save(
     auth.check_csrf(request, csrf_token)
     form = await request.form()
 
-    patch: dict[str, Any] = {"interests_profile": str(form.get("interests_profile", ""))}
+    patch: dict[str, Any] = {"interests_profile": str(form.get("interests_profile", "")).strip()}
     weights: dict[str, float] = {}
     penalties: dict[str, float] = {}
-    for key, raw in form.items():
-        if key.startswith("w_"):
-            weights[key] = float(str(raw))
-        elif key.startswith("penalty_"):
-            penalties[key.removeprefix("penalty_")] = float(str(raw))
+    try:
+        for key, raw in form.items():
+            if key.startswith("w_"):
+                weights[key] = round(float(str(raw)), 3)
+            elif key.startswith("penalty_"):
+                penalties[key.removeprefix("penalty_")] = round(float(str(raw)), 3)
+        patch["threshold"] = round(float(str(form.get("threshold", 0.45))), 3)
+        patch["top_n"] = int(float(str(form.get("top_n", 6))))
+    except ValueError:
+        raise HTTPException(400, "Недопустимое число в настройках") from None
     patch["weights"] = weights
     patch["penalties"] = penalties
-    patch["threshold"] = float(str(form.get("threshold", 0.45)))
-    patch["top_n"] = int(str(form.get("top_n", 6)))
 
     await repo.update_chat_settings(chat_id, patch)
     return RedirectResponse(f"/selection?chat={chat_id}", status_code=303)
@@ -340,7 +497,11 @@ async def selection_preview(
     if chat is None:
         raise HTTPException(404, "Группа не найдена")
 
-    target = date_type.fromisoformat(day) if day else local_today() - timedelta(days=1)
+    try:
+        target = date_type.fromisoformat(day) if day else local_today() - timedelta(days=1)
+    except ValueError:
+        return render(request, "_preview.html", {"error": "дата должна быть вида 2026-09-20",
+                                                 "day": local_today()})
     stored = await repo.get_digest(chat.id, target)
 
     try:
@@ -356,6 +517,7 @@ async def selection_preview(
         {
             "day": target,
             "result": result,
+            "cost": cost_of(result.usage.tokens_in, result.usage.tokens_out),
             "old_markdown": stored.summary_md if stored else "",
             "topics": sorted(result.all_topics, key=lambda t: -t.score),
         },
@@ -560,6 +722,14 @@ async def ratings_page(
     nomination = BY_KEY.get(sort, BY_KEY["useful"])
     rows.sort(key=nomination.value, reverse=True)
 
+    useful = sorted(
+        (r for r in rows if float(r.get("usefulness") or 0) > 0),
+        key=lambda r: float(r.get("usefulness") or 0),
+        reverse=True,
+    )[:10]
+    names = [str(r.get("name") or r["tg_user_id"]) for r in useful]
+    values = [scale.get(int(r["tg_user_id"]), 0) for r in useful]
+
     return render(
         request,
         "ratings.html",
@@ -574,6 +744,10 @@ async def ratings_page(
             "nominations": NOMINATIONS,
             "sort": nomination.key,
             "tops": {n.key: top_of(n, rows, limit=3) for n in NOMINATIONS},
+            "leaders": {
+                "spec": {"labels": names, "values": values, "unit": "из 100", "max": 100},
+                "rows": list(zip(names, values, strict=True)),
+            },
         },
     )
 
@@ -604,15 +778,16 @@ async def qa_page(request: Request, _: dict = Depends(auth.require_owner)) -> HT
 
 @app.get("/system", response_class=HTMLResponse)
 async def system_page(request: Request, _: dict = Depends(auth.require_owner)) -> HTMLResponse:
+    now = datetime.now(ZoneInfo(cfg.TZ))
     return render(
         request,
         "system.html",
         {
             "active": "system",
-            "states": await repo.get_states(),
+            "processes": labels.describe_states(await repo.get_states(), now),
             "chats": await repo.list_chats(),
             "pending_media": await repo.pending_media_count(),
-            "now": datetime.now(ZoneInfo(cfg.TZ)),
+            "now": now,
         },
     )
 
@@ -629,7 +804,10 @@ async def system_run_digest(
     chat = await repo.get_chat_by_id(chat_id)
     if chat is None:
         raise HTTPException(404, "Группа не найдена")
-    target = date_type.fromisoformat(day) if day else local_today()
+    try:
+        target = date_type.fromisoformat(day) if day else local_today()
+    except ValueError:
+        raise HTTPException(400, "Дата должна быть вида 2026-09-20") from None
     await digest_pipeline.run_for_chat(chat, target, save=True)
     return RedirectResponse("/digests", status_code=303)
 
@@ -668,6 +846,12 @@ async def system_export(
             ],
         }
     )
+
+
+# страница участников — отдельным модулем, со своими проверками доступа
+from src.web.portal import router as portal_router  # noqa: E402
+
+app.include_router(portal_router)
 
 
 def main() -> None:

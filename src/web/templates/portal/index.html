@@ -1,0 +1,19 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, badge, empty %}
+{% block title %}Дайджесты{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Ваши группы</h1>
+  <p class="lead">Дайджесты групп, в которых вы состоите и где их открыл владелец бота.</p></div></div>
+<section class="card">
+  {% for c in chats %}
+    <a class="row-link" href="/g/{{ c.id }}">
+      <span class="avatar" aria-hidden="true" style="width:40px;height:40px;font-size:17px;border-radius:12px">{{ chat_name(c)[:1]|upper }}</span>
+      <div class="text"><div class="title">{{ chat_name(c) }}</div>
+        {% if is_owner and c.portal == 'off' %}<div class="hint">закрыта для участников — видите только вы</div>{% endif %}</div>
+      {{ icon('chevron', 'chev') }}
+    </a>
+  {% else %}
+    {{ empty('Пока нечего показать', 'Страница открывается участникам группы, когда её включает владелец бота. Если вы только что вступили в группу — попробуйте через пару минут.', 'lock') }}
+  {% endfor %}
+</section>
+{% endblock %}

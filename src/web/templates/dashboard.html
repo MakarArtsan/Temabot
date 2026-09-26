@@ -1,81 +1,98 @@
 {% extends "base.html" %}
-{% block title %}Дашборд{% endblock %}
-{% block h1 %}Дашборд{% endblock %}
-{% block head %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>{% endblock %}
+{% from "_ui.html" import icon, badge, kpi, chart, empty %}
+{% block title %}Обзор{% endblock %}
+{% block head %}<script src="/static/vendor/chart.umd.min.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block h1 %}Обзор{% endblock %}
+{% block lead %}<p class="lead">Что собрано, сколько стоит и как работают процессы — за последние 30 дней.</p>{% endblock %}
+
 {% block content %}
-<div class="row">
-  <div class="card">
-    <div class="muted">Сообщений собрано</div>
-    <div class="big">{{ stats.messages }}</div>
-    <div class="muted">участников: {{ stats.authors }}</div>
-  </div>
-  <div class="card">
-    <div class="muted">Голосовых</div>
-    <div class="big">{{ stats.voices }}</div>
-    <div class="muted">расшифровано: {{ stats.transcribed }}</div>
-  </div>
-  <div class="card">
-    <div class="muted">Очередь расшифровки</div>
-    <div class="big">{{ pending_media }}</div>
-    <div class="muted">ждут обработки</div>
-  </div>
-  <div class="card">
-    <div class="muted">Токены за месяц</div>
-    <div class="big">${{ '%.2f'|format(month_cost) }}</div>
-    <div class="muted">сегодня: {{ tokens_today.tokens_in }} → {{ tokens_today.tokens_out }}</div>
-  </div>
+<div class="kpis">
+  {{ kpi('Сообщения', num(totals.messages), 'за 30 дней · сегодня ' ~ num(totals.today) ~ ' · всего собрано: ' ~ num(stats.messages), 'message') }}
+  {{ kpi('Участники', num(stats.authors), 'писали хоть раз', 'groups') }}
+  {{ kpi('Голосовые', num(stats.voices), 'расшифровано: ' ~ num(stats.transcribed) ~ (' · в очереди: ' ~ num(pending_media) if pending_media else ''), 'mic') }}
+  {{ kpi('Расходы', money(totals.cost), 'за 30 дней, оценка · сегодня ' ~ money(totals.cost_today), 'coin') }}
 </div>
 
-<div class="card">
-  <h2 style="margin-top:0">Сообщений по дням</h2>
-  <canvas id="perDay" height="90"></canvas>
+<div class="grid main-side">
+  <section class="card">
+    <div class="card-head">
+      <div><h2>Сообщений в день</h2><p class="muted small">все группы вместе</p></div>
+    </div>
+    {% if totals.messages %}
+      {{ chart('activity', 'columns', activity.spec, ['День', 'Сообщений'], activity.rows, 'Сообщений в день за 30 дней') }}
+    {% else %}
+      {{ empty('Сообщений пока нет', 'Они появятся, когда заработает сборщик.', 'message') }}
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div><h2>Расходы в день</h2><p class="muted small">по цене {{ price_note }}</p></div>
+    </div>
+    {% if totals.cost %}
+      {{ chart('costs', 'columns', costs.spec, ['День', 'Расход, $'], costs.rows, 'Расходы на модель в день') }}
+    {% else %}
+      {{ empty('Модель ещё не вызывалась', '', 'coin') }}
+    {% endif %}
+  </section>
 </div>
 
-<div class="grid2">
-  <div class="card">
-    <h2 style="margin-top:0">Последние дайджесты</h2>
-    {% if digests %}
-      <table>
-        <tr><th>День</th><th>Группа</th><th>Тем</th><th>Токенов</th></tr>
-        {% for d in digests %}
-          <tr>
-            <td><a href="/digests/{{ d.id }}">{{ d.day }}</a></td>
-            <td>{{ d.title or d.tg_id }}</td>
-            <td>{{ d.shown }} <span class="muted">+{{ d.missed }} отсеяно</span></td>
-            <td>{{ d.tokens_used or 0 }}</td>
-          </tr>
-        {% endfor %}
-      </table>
-    {% else %}<p class="muted">Дайджестов пока нет.</p>{% endif %}
-  </div>
+<div class="grid two section">
+  <section class="card">
+    <div class="card-head">
+      <h2>Последние дайджесты</h2>
+      <a class="btn ghost sm" href="/digests">Все {{ icon('chevron', 'sm') }}</a>
+    </div>
+    {% for d in digests %}
+      <a class="row-link" href="/digests/{{ d.id }}">
+        <div class="text">
+          <div class="title">{{ chat_name(d) }} · {{ d.day.strftime('%d.%m') }}</div>
+          <div class="hint muted small">{{ d.shown }} {{ plural(d.shown, 'тема', 'темы', 'тем') }} в дайджесте, {{ d.missed }} отсеяно · {{ d.msg_count or 0 }} сообщ.</div>
+        </div>
+        {{ icon('chevron', 'chev') }}
+      </a>
+    {% else %}
+      {{ empty('Дайджестов пока нет', 'Первый соберётся сегодня вечером — или соберите вручную на странице «Система».', 'digest') }}
+    {% endfor %}
+  </section>
 
-  <div class="card">
-    <h2 style="margin-top:0">Процессы</h2>
-    {% if states %}
-      <table>
-        {% for key, value in states.items() %}
-          <tr><td><code>{{ key }}</code></td><td class="muted">{{ value }}</td></tr>
-        {% endfor %}
-      </table>
-    {% else %}<p class="muted">Отметок пока нет — процессы ещё не запускались.</p>{% endif %}
-    <p class="muted">Последнее сообщение: {{ stats.last_at or '—' }}</p>
-  </div>
+  <section class="card">
+    <div class="card-head">
+      <h2>Процессы</h2>
+      <a class="btn ghost sm" href="/system">Подробнее {{ icon('chevron', 'sm') }}</a>
+    </div>
+    <div class="rows">
+      {% for p in processes %}
+        <div class="row">
+          <div class="text"><div class="title">{{ p.title }}</div><div class="hint">{{ p.detail }}</div></div>
+          <div class="control">{{ badge(p.label, p.status) }}</div>
+        </div>
+      {% else %}
+        {{ empty('Отметок пока нет', 'Процессы ещё не запускались.', 'pulse') }}
+      {% endfor %}
+    </div>
+  </section>
 </div>
 
-<script>
-  const days = {{ per_day | map(attribute='day') | map('string') | list | tojson }};
-  const counts = {{ per_day | map(attribute='count') | list | tojson }};
-  const ink = getComputedStyle(document.documentElement).getPropertyValue('--muted');
-  new Chart(document.getElementById('perDay'), {
-    type: 'bar',
-    data: { labels: days, datasets: [{ data: counts, backgroundColor: '#2563eb' }] },
-    options: {
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: ink }, grid: { display: false } },
-        y: { ticks: { color: ink }, beginAtZero: true }
-      }
-    }
-  });
-</script>
+<section class="card section">
+  <div class="card-head">
+    <h2>Группы</h2>
+    <a class="btn ghost sm" href="/groups">Настроить {{ icon('chevron', 'sm') }}</a>
+  </div>
+  {% for c in chats %}
+    <div class="row">
+      <div class="text">
+        <div class="title">{{ chat_name(c) }}</div>
+        <div class="btn-row" style="margin-top:6px">
+          {{ badge('сбор', 'ok' if c.collect else 'idle') }}
+          {{ badge('дайджест', 'ok' if c.digest else 'idle') }}
+          {{ badge('в группе: ' ~ publish_labels[c.publish], 'ok' if c.publish != 'off' else 'idle') }}
+          {{ badge('участникам: ' ~ portal_labels[c.portal], 'ok' if c.portal != 'off' else 'idle') }}
+        </div>
+      </div>
+    </div>
+  {% else %}
+    {{ empty('Групп пока нет', 'Они появятся, когда сборщик увидит чат или бота добавят в группу.', 'groups') }}
+  {% endfor %}
+</section>
 {% endblock %}

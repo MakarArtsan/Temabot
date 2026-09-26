@@ -1,0 +1,17 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, digest_view %}
+{% block title %}{{ day.strftime('%d.%m') }} · {{ chat_name(chat) }}{% endblock %}
+{% block content %}
+<a class="eyebrow" href="/g/{{ chat.id }}">{{ icon('back', 'sm') }} {{ chat_name(chat) }}</a>
+<div class="page-head">
+  <div>
+    <h1>{{ weekday(day)|capitalize }}, {{ day.strftime('%d.%m.%Y') }}</h1>
+    <p class="lead">Дайджест дня: выводы, а не пересказ. Ссылки ведут к сообщениям в Telegram.</p>
+  </div>
+  <div class="page-actions">
+    {% if prev_day %}<a class="btn ghost sm" href="/g/{{ chat.id }}/d/{{ prev_day.isoformat() }}">{{ icon('back', 'sm') }}{{ prev_day.strftime('%d.%m') }}</a>{% endif %}
+    {% if next_day %}<a class="btn ghost sm" href="/g/{{ chat.id }}/d/{{ next_day.isoformat() }}">{{ next_day.strftime('%d.%m') }}{{ icon('chevron', 'sm') }}</a>{% endif %}
+  </div>
+</div>
+{{ digest_view(data, show_heroes=ratings_visible) }}
+{% endblock %}

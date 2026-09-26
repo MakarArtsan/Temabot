@@ -177,6 +177,16 @@ async def heartbeat(bot: Any) -> None:
     )
 
 
+async def refresh_titles(bot: Any) -> None:
+    """Группу могли переименовать — раз в сутки сверяем названия."""
+    from src.bot.handlers_admin import refresh_chat_titles
+
+    try:
+        await refresh_chat_titles(bot)
+    except Exception:
+        log.exception("Названия групп не обновились")
+
+
 def build_scheduler(bot: Any, *, digest_time: time | None = None) -> AsyncIOScheduler:
     zone = ZoneInfo(cfg.TZ)
     scheduler = AsyncIOScheduler(timezone=zone)
@@ -228,6 +238,14 @@ def build_scheduler(bot: Any, *, digest_time: time | None = None) -> AsyncIOSche
         retrain_all,
         CronTrigger(day_of_week="mon", hour=4, minute=0, timezone=zone),
         id="retrain",
+        replace_existing=True,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        refresh_titles,
+        CronTrigger(hour=4, minute=20, timezone=zone),
+        args=[bot],
+        id="chat_titles",
         replace_existing=True,
         coalesce=True,
     )

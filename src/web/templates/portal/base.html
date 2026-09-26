@@ -1,0 +1,16 @@
+{% extends "_layout.html" %}
+{% from "_ui.html" import icon %}
+{% block body_class %}portal{% endblock %}
+{% block shell %}
+<header class="portal-top">
+  <div class="inner">
+    <a class="brand" href="/g"><span class="brand-mark">{{ icon('logo') }}</span>Дайджесты</a>
+    <span class="spacer"></span>
+    {% if is_owner %}<a class="btn ghost sm" href="/">{{ icon('sliders', 'sm') }}Админка</a>{% endif %}
+    <a class="icon-btn" href="/logout" aria-label="Выйти" title="Выйти">{{ icon('logout') }}</a>
+  </div>
+</header>
+<main class="content no-tabbar">
+  {% block content %}{% endblock %}
+</main>
+{% endblock %}

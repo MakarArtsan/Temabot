@@ -1,35 +1,28 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, badge, empty %}
 {% block title %}Дайджесты{% endblock %}
-{% block h1 %}Архив дайджестов{% endblock %}
+{% block h1 %}Дайджесты{% endblock %}
+{% block lead %}<p class="lead">Архив по дням. Внутри — как дайджест увидит группа, кнопка публикации и разбор: почему каждая тема прошла или нет.</p>{% endblock %}
 {% block content %}
-<div class="card">
-  {% if digests %}
-    <div class="scroll"><table>
-      <tr><th>День</th><th>Группа</th><th class="wide-only">Сообщений</th><th>Тем</th>
-          <th class="wide-only">Токенов</th><th>В группе</th><th></th></tr>
-      {% for d in digests %}
-        <tr>
-          <td>{{ d.day.strftime('%d.%m') if d.day else '' }}</td>
-          <td>{{ d.title or d.tg_id }}</td>
-          <td class="wide-only">{{ d.msg_count or 0 }}</td>
-          <td>{{ d.shown }} <span class="muted">+{{ d.missed }}</span></td>
-          <td class="wide-only">{{ d.tokens_used or 0 }}</td>
-          <td>
-            {% if d.published_at %}
-              {% if d.published_msg_ids %}
-                <a href="{{ deeplink(d.tg_id, d.published_msg_ids[0]) }}" target="_blank" rel="noopener">✓ {{ d.published_at|local_time }}</a>
-              {% else %}✓ {{ d.published_at|local_time }}{% endif %}
-            {% elif d.publish == 'off' %}<span class="muted">только мне</span>
-            {% else %}<span class="pill warn">не опубликован</span>{% endif %}
-          </td>
-          <td><a class="btn" href="/digests/{{ d.id }}">открыть</a></td>
-        </tr>
-      {% endfor %}
-    </table></div>
-    <p class="muted">«Тем» — сколько попало в дайджест, плюс сколько отсеяно порогом.
-      Внутри дайджеста — как его увидит группа и кнопка публикации.</p>
+<section class="card">
+  {% for d in digests %}
+    <a class="row-link" href="/digests/{{ d.id }}">
+      <div class="text">
+        <div class="title">{{ d.day.strftime('%d.%m.%Y') if d.day else '' }} · {{ chat_name(d) }}</div>
+        <div class="hint muted small">
+          {{ d.shown }} {{ plural(d.shown, 'тема', 'темы', 'тем') }}{% if d.missed %}, ещё {{ d.missed }} отсеяно{% endif %}
+          · {{ num(d.msg_count or 0) }} сообщ.
+        </div>
+      </div>
+      <div class="control">
+        {% if d.published_at %}{{ badge('в группе ' ~ (d.published_at|local_time), 'ok') }}
+        {% elif d.publish == 'off' %}{{ badge('только вам') }}
+        {% else %}{{ badge('ждёт публикации', 'warn') }}{% endif %}
+      </div>
+      {{ icon('chevron', 'chev') }}
+    </a>
   {% else %}
-    <p class="muted">Дайджестов пока нет.</p>
-  {% endif %}
-</div>
+    {{ empty('Дайджестов пока нет', 'Первый соберётся вечером. Собрать вручную можно на странице «Система».', 'digest') }}
+  {% endfor %}
+</section>
 {% endblock %}

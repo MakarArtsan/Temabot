@@ -39,6 +39,28 @@ class GroupCb(CallbackData, prefix="grp"):
     chat_id: int
 
 
+async def refresh_chat_titles(bot: Any) -> int:
+    """Подтянуть настоящие названия групп, где состоит бот.
+
+    Группа из TG_GROUP_ID заводится одним id, и без этого везде вместо её
+    названия показывался бы номер. Только чтение: в группу ничего не пишется.
+    """
+    updated = 0
+    for chat in await repo.list_chats():
+        try:
+            info = await bot.get_chat(chat.tg_id)
+        except Exception:
+            # бота в группе нет или Telegram не ответил — название подтянет коллектор
+            log.debug("Название группы %s не получено", chat.tg_id, exc_info=True)
+            continue
+        if await repo.set_chat_title(chat.tg_id, getattr(info, "title", None)):
+            settings_cache.forget(chat.tg_id)
+            updated += 1
+    if updated:
+        log.info("Обновлены названия групп: %s", updated)
+    return updated
+
+
 def _decision_keyboard(chat_tg_id: int) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Разрешить", callback_data=GroupCb(action="allow", chat_id=chat_tg_id))

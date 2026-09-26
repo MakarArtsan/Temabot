@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # потому что весь лимит съеден размышлением. Замеры — в docs/SETUP.md.
     LLM_THINKING: str = "disabled"     # disabled | auto
     LLM_REASONING_EFFORT: str = ""     # для провайдеров, где thinking не отключается
+    # Цена за миллион токенов, $ — только для оценки расходов в админке.
+    # По умолчанию верхняя (дневная) цена deepseek-flash: оценка не занижает.
+    LLM_PRICE_IN: float = 0.30
+    LLM_PRICE_OUT: float = 1.20
 
     # --- Эмбеддинги через API (у DeepSeek их нет, нужен отдельный провайдер) ---
     EMBED_BASE_URL: str = ""           # пусто -> берётся LLM_BASE_URL

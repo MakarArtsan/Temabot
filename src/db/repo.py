@@ -5,8 +5,8 @@
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, time, timedelta
 from datetime import date as date_type
-from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -76,6 +76,27 @@ async def bootstrap_primary_chat(chat_tg_id: int) -> Chat:
     return chat
 
 
+async def set_chat_title(chat_tg_id: int, title: str | None) -> bool:
+    """Запомнить настоящее название группы. True — если оно изменилось.
+
+    Строки групп часто появляются из одного id (TG_GROUP_ID), и тогда везде
+    вместо названия показывался бы номер вида -1002354231333.
+    """
+    cleaned = (title or "").strip()
+    if not cleaned:
+        return False
+    changed = await pool.fetchval(
+        """
+        update chats set title = $2
+         where tg_id = $1 and title is distinct from $2
+        returning id
+        """,
+        chat_tg_id,
+        cleaned,
+    )
+    return changed is not None
+
+
 async def list_chats(*, collect: bool | None = None, digest: bool | None = None) -> list[Chat]:
     rows = await pool.fetch(
         """
@@ -97,6 +118,7 @@ async def set_chat_flags(
     digest: bool | None = None,
     copier: str | None = None,
     publish: str | None = None,
+    portal: str | None = None,
 ) -> Chat | None:
     row = await pool.fetchrow(
         """
@@ -104,7 +126,8 @@ async def set_chat_flags(
            set collect = coalesce($2, collect),
                digest  = coalesce($3, digest),
                copier  = coalesce($4, copier),
-               publish = coalesce($5, publish)
+               publish = coalesce($5, publish),
+               portal  = coalesce($6, portal)
          where tg_id = $1
         returning *
         """,
@@ -113,8 +136,116 @@ async def set_chat_flags(
         digest,
         copier,
         publish,
+        portal,
     )
     return Chat.from_row(row) if row else None
+
+
+# ------------------------------------------- страница участников (TZ §9, решение владельца)
+
+MEMBERS_STATE_PREFIX = "members:"
+
+
+async def list_portal_chats() -> list[Chat]:
+    """Группы, для которых владелец открыл страницу участников."""
+    rows = await pool.fetch(
+        "select * from chats where portal in ('digests', 'all') order by title nulls last, tg_id"
+    )
+    return [Chat.from_row(r) for r in rows]
+
+
+async def save_chat_members(chat_id: int, user_ids: list[int], *, complete: bool) -> None:
+    """Список участников группы от коллектора.
+
+    Полный список заменяет прежний: кто вышел, тот пропадает. Неполный (у
+    больших групп Telegram отдаёт не всех) только добавляет — иначе из списка
+    выпали бы настоящие участники. Время сверки пишется в state: по нему веб
+    решает, можно ли ещё доверять списку.
+    """
+    db = await pool.get_pool()
+    async with db.acquire() as conn, conn.transaction():
+        if complete:
+            await conn.execute(
+                """
+                delete from chat_members
+                 where chat_id = $1 and not (tg_user_id = any($2::bigint[]))
+                """,
+                chat_id,
+                user_ids,
+            )
+        await conn.execute(
+            """
+            insert into chat_members (chat_id, tg_user_id, seen_at)
+            select $1, unnest($2::bigint[]), now()
+            on conflict (chat_id, tg_user_id) do update set seen_at = excluded.seen_at
+            """,
+            chat_id,
+            user_ids,
+        )
+        await conn.execute(
+            """
+            insert into state (key, value) values ($1, $2::jsonb)
+            on conflict (key) do update set value = excluded.value
+            """,
+            f"{MEMBERS_STATE_PREFIX}{chat_id}",
+            {
+                "at": datetime.now(UTC).isoformat(),
+                "count": len(user_ids),
+                "complete": complete,
+            },
+        )
+
+
+async def add_chat_member(chat_id: int, tg_user_id: int) -> None:
+    """Человек вошёл в группу (событие коллектора)."""
+    await pool.execute(
+        """
+        insert into chat_members (chat_id, tg_user_id) values ($1, $2)
+        on conflict (chat_id, tg_user_id) do update set seen_at = now()
+        """,
+        chat_id,
+        tg_user_id,
+    )
+
+
+async def remove_chat_member(chat_id: int, tg_user_id: int) -> None:
+    """Человек вышел или его удалили — доступ к странице участников пропадает."""
+    await pool.execute(
+        "delete from chat_members where chat_id = $1 and tg_user_id = $2", chat_id, tg_user_id
+    )
+
+
+async def chat_member_status(
+    chat_id: int, tg_user_id: int, *, max_age: timedelta = timedelta(hours=24)
+) -> bool | None:
+    """Состоит ли человек в группе — по списку коллектора.
+
+    None — списка нет или он давно не сверялся: тогда ему нельзя верить ни в
+    ту, ни в другую сторону.
+    """
+    synced = await get_state(f"{MEMBERS_STATE_PREFIX}{chat_id}")
+    try:
+        at = datetime.fromisoformat(str((synced or {}).get("at")))
+    except (TypeError, ValueError):
+        return None
+    if at.tzinfo is None or datetime.now(at.tzinfo) - at > max_age:
+        return None
+    found = await pool.fetchval(
+        "select 1 from chat_members where chat_id = $1 and tg_user_id = $2",
+        chat_id,
+        tg_user_id,
+    )
+    return found is not None
+
+
+async def list_chat_digests(chat_id: int, limit: int = 60) -> list[Digest]:
+    """Архив дайджестов одной группы, свежие первыми."""
+    rows = await pool.fetch(
+        "select * from digests where chat_id = $1 order by day desc limit $2",
+        chat_id,
+        limit,
+    )
+    return [Digest.from_row(r) for r in rows]
 
 
 async def update_chat_settings(chat_id: int, patch: dict[str, Any]) -> dict[str, Any]:

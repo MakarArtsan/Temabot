@@ -1,0 +1,118 @@
+{# Общие элементы страниц. Импорт: {% from "_ui.html" import icon, badge %} #}
+
+{% macro icon(name, cls="") -%}
+<svg class="ic {{ cls }}" aria-hidden="true" focusable="false"><use href="#i-{{ name }}"></use></svg>
+{%- endmacro %}
+
+{% macro badge(text, kind="") -%}
+<span class="badge {{ kind }}">{% if kind in ('ok', 'warn', 'bad', 'idle') %}<span class="dot"></span>{% endif %}{{ text }}</span>
+{%- endmacro %}
+
+{% macro kpi(label, value, note="", ic="") -%}
+<div class="card kpi">
+  <div class="label">{% if ic %}{{ icon(ic, 'sm') }}{% endif %}{{ label }}</div>
+  <div class="value">{{ value }}</div>
+  {% if note %}<div class="sub">{{ note }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro empty(title, text="", ic="info") -%}
+<div class="empty">
+  {{ icon(ic) }}
+  <div class="title">{{ title }}</div>
+  {% if text %}<div>{{ text }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{# График: холст + данные в JSON + таблица-двойник для тех, кому график не виден #}
+{% macro chart(id, kind, spec, head, rows, label, tall=false) -%}
+<div class="chart {{ 'tall' if tall }}" role="img" aria-label="{{ label }}">
+  <canvas data-chart="{{ kind }}" data-source="{{ id }}-data"></canvas>
+</div>
+<script type="application/json" id="{{ id }}-data">{{ spec|tojson }}</script>
+<details class="more chart-table">
+  <summary>{{ icon('table', 'sm') }}Показать таблицей</summary>
+  <div class="table-wrap"><table>
+    <tr>{% for h in head %}<th class="{{ 'num' if not loop.first }}">{{ h }}</th>{% endfor %}</tr>
+    {% for row in rows %}
+      <tr>{% for cell in row %}<td class="{{ 'num' if not loop.first }}">{{ cell }}</td>{% endfor %}</tr>
+    {% endfor %}
+  </table></div>
+</details>
+{%- endmacro %}
+
+{# Дайджест для чтения: карточки, а не текст из Telegram. Без оценок и признаков. #}
+{% macro digest_view(data, show_heroes=true) -%}
+{% if not data.topics and not data.highlights %}
+  <div class="card">{{ empty('Тихий день', 'Ничего заметного в этот день не обсуждали.', 'digest') }}</div>
+{% else %}
+  {% if data.highlights %}
+  <section class="card">
+    <div class="card-head"><h2>Главное за день</h2></div>
+    <ul class="highlights">
+      {% for line in data.highlights[:3] %}<li>{{ icon('pin') }}<span>{{ line }}</span></li>{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if data.topics %}
+  <section class="card">
+    <div class="card-head"><h2>Темы дня</h2><span class="muted small">{{ data.topics|length }}</span></div>
+    {% for t in data.topics %}
+      <article class="topic">
+        <div class="head">
+          <h3>{{ t.title }}</h3>
+          {{ badge(kind_label(t.kind)) }}
+        </div>
+        {% set verdict = t.takeaway or t.decision %}
+        {% if verdict %}<p class="takeaway">{{ verdict }}</p>{% endif %}
+        {% if t.why %}<p class="why">Почему важно: {{ t.why }}</p>{% endif %}
+        {% if t.debate %}<p class="extra">Спорили: {{ t.debate }}</p>{% endif %}
+        {% if t.mentions %}<p class="extra">Упоминали: {{ t.mentions[:6]|join(', ') }}</p>{% endif %}
+        <div class="meta">
+          {% set people = t.participants|length or t.contributors|length %}
+          {% if people %}<span title="участников">{{ icon('groups', 'sm') }}{{ people }}</span>{% endif %}
+          <span title="сообщений">{{ icon('message', 'sm') }}{{ t.msg_count }}</span>
+          {% if t.reactions %}<span title="реакций">{{ icon('heart', 'sm') }}{{ t.reactions }}</span>{% endif %}
+          <a href="{{ deeplink(data.chat_tg_id, t.anchor_msg_id) }}" target="_blank" rel="noopener noreferrer">к обсуждению {{ icon('external', 'sm') }}</a>
+        </div>
+      </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if data.unanswered or data.links %}
+  <div class="grid two">
+    {% if data.unanswered %}
+    <section class="card">
+      <div class="card-head"><h2>Остались без ответа</h2></div>
+      <ul class="plain-list">
+        {% for question, msg_id in data.unanswered[:5] %}
+          <li><a href="{{ deeplink(data.chat_tg_id, msg_id) }}" target="_blank" rel="noopener noreferrer">{{ question }}</a></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+    {% if data.links %}
+    <section class="card">
+      <div class="card-head"><h2>Ссылки дня</h2></div>
+      <ul class="plain-list">
+        {% for url in data.links[:10] %}
+          <li>{% if url.startswith('http://') or url.startswith('https://') %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer nofollow">{{ url }}</a>{% else %}{{ url }}{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+
+{% if show_heroes and data.heroes %}
+  <div class="note accent">{{ icon('trophy') }}<p>{{ data.heroes }}</p></div>
+{% endif %}
+<p class="muted small">
+  {{ data.msg_count }} {{ plural(data.msg_count, 'сообщение', 'сообщения', 'сообщений') }},
+  {{ data.participants }} {{ plural(data.participants, 'участник', 'участника', 'участников') }}{% if data.noise_count %},
+  ещё {{ data.noise_count }} коротких реплик не в счёт{% endif %}.
+</p>
+{%- endmacro %}

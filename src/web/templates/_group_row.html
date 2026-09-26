@@ -1,71 +1,108 @@
-<div class="card group" id="chat-{{ chat.tg_id }}">
-  <div style="margin-bottom:8px">
-    <strong>{{ chat.title or chat.tg_id }}</strong>
-    <code class="muted">{{ chat.tg_id }}</code>
+{% from "_ui.html" import icon, badge %}
+{% set name = chat_name(chat) %}
+{% set ratings_public = ((chat.settings or {}).get('ratings') or {}).get('publish') %}
+{% macro post(field, value) -%}
+hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}" hx-swap="outerHTML"
+hx-vals='{"field":"{{ field }}","value":"{{ value }}","csrf_token":"{{ csrf }}"}'
+{%- endmacro %}
+<section class="card group" id="chat-{{ chat.tg_id }}">
+  <div class="card-head">
+    <div>
+      <h2>{{ name }}</h2>
+      <p class="muted small">
+        {% if chat.title %}id {{ chat.tg_id }}{% else %}Название появится, когда бот или сборщик его узнают{% endif %}
+        · дайджест в {{ chat.digest_time.strftime('%H:%M') if chat.digest_time else '23:30' }}
+        · сообщения хранятся {{ chat.retention_days }} дн.
+      </p>
+    </div>
   </div>
-  <div class="fields">
-    <span class="muted">Сбор</span>
-    <div class="controls">
-      <button class="{{ '' if chat.collect else 'ghost' }}"
-              hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-              hx-swap="outerHTML"
-              hx-vals='{"field":"collect","value":"{{ 0 if chat.collect else 1 }}","csrf_token":"{{ csrf }}"}'>
-        {{ 'сбор включён' if chat.collect else 'сбор выключен' }}
-      </button>
+
+  <div class="rows">
+    <div class="row">
+      <div class="text">
+        <div class="title">Читать сообщения группы</div>
+        <div class="hint">Сборщик сохраняет переписку. Без этого не будет ни дайджеста, ни поиска.</div>
+      </div>
+      <div class="control">
+        <button class="switch" role="switch" aria-checked="{{ 'true' if chat.collect else 'false' }}"
+                aria-label="Читать сообщения группы" {{ post('collect', 0 if chat.collect else 1) }}></button>
+      </div>
     </div>
 
-    <span class="muted">Дайджест</span>
-    <div class="controls">
-      <button class="{{ '' if chat.digest else 'ghost' }}"
-              hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-              hx-swap="outerHTML"
-              hx-vals='{"field":"digest","value":"{{ 0 if chat.digest else 1 }}","csrf_token":"{{ csrf }}"}'>
-        {{ 'дайджест включён' if chat.digest else 'дайджест выключен' }}
-      </button>
+    <div class="row">
+      <div class="text">
+        <div class="title">Собирать дайджест каждый вечер</div>
+        <div class="hint">Бот присылает его вам в личку, а здесь он лежит в «Дайджестах».</div>
+      </div>
+      <div class="control">
+        <button class="switch" role="switch" aria-checked="{{ 'true' if chat.digest else 'false' }}"
+                aria-label="Собирать дайджест" {{ post('digest', 0 if chat.digest else 1) }}></button>
+      </div>
     </div>
 
-    <span class="muted">Копировщик</span>
-    <div class="controls">
-      {% for mode, label in [('allow','разрешён'), ('ask','спросить'), ('deny','запрещён')] %}
-        <button class="{{ '' if chat.copier == mode else 'ghost' }}"
-                hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-                hx-swap="outerHTML"
-                hx-vals='{"field":"copier","value":"{{ mode }}","csrf_token":"{{ csrf }}"}'>
-          {{ label }}
-        </button>
-      {% endfor %}
+    <div class="row wrap">
+      <div class="text">
+        <div class="title">Публиковать дайджест в группе</div>
+        <div class="hint">«По кнопке» — вы сначала читаете сами и публикуете кнопкой. «Автоматически» — каждый вечер сам, без звука.</div>
+      </div>
+      <div class="control">
+        <div class="seg" role="radiogroup" aria-label="Публикация в группе">
+          {% for mode in ['off', 'manual', 'auto'] %}
+            <button class="{{ 'on' if chat.publish == mode }}" role="radio" aria-checked="{{ 'true' if chat.publish == mode else 'false' }}"
+                    {% if mode == 'auto' and chat.publish != 'auto' %}hx-confirm="Дайджест будет каждый вечер сам публиковаться в группе «{{ name }}». Включить?"{% endif %}
+                    {{ post('publish', mode) }}>{{ publish_labels[mode] }}</button>
+          {% endfor %}
+        </div>
+      </div>
     </div>
 
-    <span class="muted">Дайджест в группу</span>
-    <div class="controls">
-      {% for mode in ['off', 'manual', 'auto'] %}
-        <button class="{{ '' if chat.publish == mode else 'ghost' }}"
-                hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-                hx-swap="outerHTML"
-                {% if mode == 'auto' and chat.publish != 'auto' %}
-                hx-confirm="Дайджест будет каждый вечер сам публиковаться в группе «{{ chat.title or chat.tg_id }}». Включить?"
-                {% endif %}
-                hx-vals='{"field":"publish","value":"{{ mode }}","csrf_token":"{{ csrf }}"}'>
-          {{ publish_labels[mode] }}
-        </button>
-      {% endfor %}
+    <div class="row wrap">
+      <div class="text">
+        <div class="title">Страница для участников</div>
+        <div class="hint">
+          Сайт только для чтения: участники входят через Telegram и видят дайджесты
+          {%- if chat.portal == 'all' %} и рейтинги{% endif %}. Настройки и исходные сообщения им не видны.
+          {% if chat.portal != 'off' %}Ссылка для группы: <a href="{{ portal_url }}" target="_blank" rel="noopener">{{ portal_url }}</a>{% endif %}
+        </div>
+      </div>
+      <div class="control">
+        <div class="seg" role="radiogroup" aria-label="Страница для участников">
+          {% for mode in ['off', 'digests', 'all'] %}
+            <button class="{{ 'on' if chat.portal == mode }}" role="radio" aria-checked="{{ 'true' if chat.portal == mode else 'false' }}"
+                    {% if mode == 'digests' and chat.portal == 'off' %}hx-confirm="Все участники группы «{{ name }}» смогут читать её дайджесты на сайте. Открыть?"{% endif %}
+                    {% if mode == 'all' and chat.portal != 'all' %}hx-confirm="Участники увидят рейтинги с именами. Админы группы согласны?"{% endif %}
+                    {{ post('portal', mode) }}>{{ portal_labels[mode] }}</button>
+          {% endfor %}
+        </div>
+      </div>
     </div>
 
-    {% set ratings_public = ((chat.settings or {}).get('ratings') or {}).get('publish') %}
-    <span class="muted">Рейтинг недели</span>
-    <div class="controls">
-      <button class="{{ '' if ratings_public else 'ghost' }}"
-              hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}"
-              hx-swap="outerHTML"
-              {% if not ratings_public %}
-              hx-confirm="Рейтинг недели с именами будет публиковаться в группе по воскресеньям. Админы группы согласны?"
-              {% endif %}
-              hx-vals='{"field":"ratings_publish","value":"{{ 0 if ratings_public else 1 }}","csrf_token":"{{ csrf }}"}'>
-        {{ 'рейтинг недели: в группе' if ratings_public else 'рейтинг недели: только мне' }}
-      </button>
+    <div class="row">
+      <div class="text">
+        <div class="title">Рейтинг недели в группе</div>
+        <div class="hint">По воскресеньям бот публикует в группе итоги недели с именами. Нужно согласие админов группы.</div>
+      </div>
+      <div class="control">
+        <button class="switch" role="switch" aria-checked="{{ 'true' if ratings_public else 'false' }}"
+                aria-label="Рейтинг недели в группе"
+                {% if not ratings_public %}hx-confirm="Рейтинг недели с именами будет публиковаться в группе по воскресеньям. Админы группы согласны?"{% endif %}
+                {{ post('ratings_publish', 0 if ratings_public else 1) }}></button>
+      </div>
     </div>
 
-    <span class="muted">Время · хранение</span>
-    <div class="muted">{{ chat.digest_time.strftime('%H:%M') if chat.digest_time else '23:30' }} · {{ chat.retention_days }} дн.</div>
+    <div class="row wrap">
+      <div class="text">
+        <div class="title">Бот-копировщик</div>
+        <div class="hint">Отвечает в группе на упоминание и сохраняет сообщение в Telegraph или в личку.</div>
+      </div>
+      <div class="control">
+        <div class="seg" role="radiogroup" aria-label="Бот-копировщик">
+          {% for mode in ['allow', 'ask', 'deny'] %}
+            <button class="{{ 'on' if chat.copier == mode }}" role="radio" aria-checked="{{ 'true' if chat.copier == mode else 'false' }}"
+                    {{ post('copier', mode) }}>{{ copier_labels[mode] }}</button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
   </div>
-</div>
+</section>

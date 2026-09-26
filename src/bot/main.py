@@ -98,6 +98,13 @@ async def run() -> None:
     me = await bot.get_me()
     log.info("Бот @%s запущен, владелец %s", me.username, cfg.OWNER_ID)
 
+    if cfg.DATABASE_URL:
+        try:
+            # названия групп вместо номеров — в админке, дайджесте и /groups
+            await asyncio.wait_for(handlers_admin.refresh_chat_titles(bot), 30)
+        except Exception:
+            log.warning("Названия групп не обновились, повторю ночью", exc_info=True)
+
     # кэшируем username и поднимаем Telegraph до начала приёма сообщений
     await copier.init_copier(bot)
 

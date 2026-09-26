@@ -1,34 +1,45 @@
+{% from "_ui.html" import icon, badge %}
 {% if error %}
-  <p style="color:var(--bad)">Не получилось: {{ error }}</p>
+  <div class="note bad">{{ icon('alert') }}<p>Не получилось собрать: {{ error }}</p></div>
 {% else %}
-  <h2>Что получилось за {{ day }}</h2>
-  <table>
-    <tr><th>Тема</th><th>Вовл</th><th>Польз</th><th>Новизна</th><th>Скор</th><th>Итог</th></tr>
-    {% for t in topics %}
-      <tr>
-        <td>{{ t.title }}<br><span class="muted">{{ t.takeaway }}</span></td>
-        <td>{{ '%.2f'|format(t.features.engagement) }}</td>
-        <td>{{ '%.2f'|format(t.features.usefulness) }}</td>
-        <td>{{ '%.2f'|format(t.features.novelty) }}</td>
-        <td><strong>{{ '%.3f'|format(t.score) }}</strong></td>
-        <td>{% if t.shown %}<span class="pill on">прошла</span>
-            {% else %}<span class="pill off">отсеяна</span>{% endif %}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="6" class="muted">За этот день тем не набралось.</td></tr>
-    {% endfor %}
-  </table>
-  <p class="muted">Токенов: {{ result.usage.tokens_in }} на вход,
-    {{ result.usage.tokens_out }} на выход</p>
+  <h3 style="margin-bottom:8px">Что получилось за {{ day.strftime('%d.%m.%Y') }}</h3>
+  {% if topics %}
+    <div class="rows">
+      {% for t in topics %}
+        <div class="row">
+          <div class="text">
+            <div class="title">{{ t.title }}</div>
+            {% if t.takeaway %}<div class="hint">{{ t.takeaway }}</div>{% endif %}
+            <div class="scores">
+              {% for key, label in feature_labels %}
+                {% if t.features.get(key) is not none %}
+                  <span class="score-chip">{{ label }} <b>{{ '%.2f'|format(t.features.get(key) or 0) }}</b></span>
+                {% endif %}
+              {% endfor %}
+              {% if t.features.get('penalty') %}<span class="score-chip">штраф <b>−{{ '%.2f'|format(t.features.penalty) }}</b></span>{% endif %}
+            </div>
+          </div>
+          <div class="control" style="text-align:right">
+            <div class="num" style="font-weight:650">{{ '%.2f'|format(t.score) }}</div>
+            {{ badge('прошла' if t.shown else 'отсеяна', 'ok' if t.shown else 'idle') }}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">За этот день тем не набралось.</p>
+  {% endif %}
+  <p class="muted small" style="margin-top:10px">Потрачено токенов: {{ num(result.usage.tokens_in) }} на вход,
+    {{ num(result.usage.tokens_out) }} на выход ≈ {{ money(cost) }}.</p>
 
-  <div class="grid2">
+  <div class="grid two" style="margin-top:12px">
     <div>
-      <h2>Новый дайджест</h2>
-      <pre style="white-space:pre-wrap;font-size:13px">{{ result.markdown }}</pre>
+      <h3 style="margin-bottom:8px">Новый дайджест</h3>
+      <div class="tg-post">{{ result.markdown }}</div>
     </div>
     <div>
-      <h2>Сохранённый ранее</h2>
-      <pre style="white-space:pre-wrap;font-size:13px" class="muted">{{ old_markdown or 'за этот день дайджеста не было' }}</pre>
+      <h3 style="margin-bottom:8px">Сохранённый раньше</h3>
+      <div class="tg-post muted">{{ old_markdown or 'За этот день дайджеста не было.' }}</div>
     </div>
   </div>
 {% endif %}

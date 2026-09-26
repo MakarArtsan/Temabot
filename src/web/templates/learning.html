@@ -1,43 +1,60 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, badge, empty %}
 {% block title %}Обучение{% endblock %}
-{% block h1 %}Обучение на оценках{% endblock %}
+{% block h1 %}Обучение на ваших оценках{% endblock %}
+{% block lead %}<p class="lead">Кнопки «👍 Полезно», «👎 Мимо» и «🔕 Не показывать» под темами копятся здесь. Раз в неделю (в понедельник ночью) бот считает, какие веса отбора лучше подходят под ваш вкус, и предлагает их. Применяете их только вы.</p>{% endblock %}
 {% block content %}
 {% for row in rows %}
-  <div class="card">
-    <h2 style="margin-top:0">{{ row.chat.title or row.chat.tg_id }}</h2>
-    <p class="muted">Оценок собрано: <strong>{{ row.count }}</strong>
-      {% if row.count < 30 %}(для пересчёта нужно хотя бы 30){% endif %}</p>
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2>{{ chat_name(row.chat) }}</h2>
+        <p class="muted small">Оценок собрано: <b>{{ row.count }}</b>{% if row.count < 30 %} — для расчёта нужно хотя бы 30{% endif %}</p>
+      </div>
+      {% if row.count < 30 %}
+        <div style="min-width:160px;flex:1;max-width:260px">
+          <div class="meter"><i style="width:{{ [(row.count / 30 * 100)|round|int, 100]|min }}%"></i></div>
+        </div>
+      {% endif %}
+    </div>
 
     {% if row.proposal and row.proposal.weights %}
-      <table>
-        <tr><th>Вес</th><th>Сейчас</th><th>Предложено</th></tr>
-        {% for key, value in row.current.items() %}
+      <div class="table-wrap"><table>
+        <tr><th>Что ценить</th><th class="num">Сейчас</th><th class="num">Предлагается</th></tr>
+        {% for s in weight_settings %}
+          {% set now = row.current.get(s.key, 0) %}
+          {% set new = row.proposal.weights.get(s.key, 0) %}
           <tr>
-            <td>{{ key }}</td>
-            <td>{{ '%.3f'|format(value) }}</td>
-            <td><strong>{{ '%.3f'|format(row.proposal.weights.get(key, 0)) }}</strong></td>
+            <td>{{ s.title }}</td>
+            <td class="num">{{ '%.2f'|format(now) }}</td>
+            <td class="num"><b>{{ '%.2f'|format(new) }}</b>
+              {% if new > now + 0.005 %}<span class="muted">↑</span>{% elif new < now - 0.005 %}<span class="muted">↓</span>{% endif %}</td>
           </tr>
         {% endfor %}
-      </table>
-      <p class="muted">
-        Точность предложенных весов на оценках: {{ '%.2f'|format(row.proposal.accuracy or 0) }},
-        у текущих: {{ '%.2f'|format(row.proposal.baseline_accuracy or 0) }}.
-        Выборка: {{ row.proposal.samples }}.
+      </table></div>
+      <p class="muted small" style="margin-top:10px">
+        С предложенными весами отбор совпал бы с вашими оценками в {{ ((row.proposal.accuracy or 0) * 100)|round|int }}% случаев,
+        с нынешними — в {{ ((row.proposal.baseline_accuracy or 0) * 100)|round|int }}%. Посчитано на {{ row.proposal.samples }} оценках.
       </p>
-      <form method="post" action="/learning/{{ row.chat.id }}/apply" style="display:inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf }}">
-        <button type="submit">Применить предложенные веса</button>
-      </form>
+      <div class="btn-row">
+        <form method="post" action="/learning/{{ row.chat.id }}/apply">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <button class="btn" type="submit">{{ icon('check', 'sm') }}Применить предложенные веса</button>
+        </form>
+        <form method="post" action="/learning/{{ row.chat.id }}/retrain">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <button class="btn ghost" type="submit">{{ icon('refresh', 'sm') }}Пересчитать сейчас</button>
+        </form>
+      </div>
     {% else %}
-      <p class="muted">Предложения нет.</p>
+      <p class="muted">Предложения пока нет.</p>
+      <form method="post" action="/learning/{{ row.chat.id }}/retrain">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button class="btn ghost" type="submit">{{ icon('refresh', 'sm') }}Пересчитать сейчас</button>
+      </form>
     {% endif %}
-
-    <form method="post" action="/learning/{{ row.chat.id }}/retrain" style="display:inline">
-      <input type="hidden" name="csrf_token" value="{{ csrf }}">
-      <button class="ghost" type="submit">Пересчитать сейчас</button>
-    </form>
-  </div>
+  </section>
 {% else %}
-  <div class="card"><p class="muted">Групп пока нет.</p></div>
+  <div class="card">{{ empty('Групп пока нет', '', 'groups') }}</div>
 {% endfor %}
 {% endblock %}

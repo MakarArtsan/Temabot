@@ -1,0 +1,12 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Нет доступа{% endblock %}
+{% block content %}
+<section class="card" style="margin-top:24px">
+  {{ empty('Здесь ничего нет — или у вас нет доступа', 'Страница открыта только участникам группы, и только если её включил владелец бота. Если вы вступили в группу только что, попробуйте через пару минут.', 'lock') }}
+  <div class="btn-row" style="justify-content:center;margin-bottom:12px">
+    <a class="btn ghost" href="/g">{{ icon('back', 'sm') }}К списку групп</a>
+    <a class="btn ghost" href="/logout">{{ icon('logout', 'sm') }}Войти другим аккаунтом</a>
+  </div>
+</section>
+{% endblock %}

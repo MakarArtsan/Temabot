@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import html as html_lib
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date as date_type
 from typing import Any
 
@@ -143,6 +143,16 @@ class DigestData:
             "low_value_count": self.low_value_count,
             "heroes": self.heroes,
         }
+
+    def titled(self, title: str | None) -> DigestData:
+        """Тот же дайджест с нынешним названием группы.
+
+        Дайджест, собранный до того, как стало известно название, хранит номер
+        группы — показывать и публиковать его лучше с настоящим названием.
+        """
+        if title and title != self.chat_title:
+            return replace(self, chat_title=title)
+        return self
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DigestData:

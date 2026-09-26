@@ -1,10 +1,15 @@
-"""Авторизация админки: Telegram Login Widget, только владелец (TZ §4.9, §9).
+"""Авторизация: Telegram Login Widget (TZ §4.9, §9).
 
 В админке лежит содержимое закрытых групп, поэтому незащищённых страниц нет
 вовсе: единственный публичный маршрут — сама страница входа.
 
 Виджет отдаёт данные пользователя, подписанные ключом из токена бота. Проверяем
-подпись, свежесть и совпадение с OWNER_ID — только после этого выдаём куку.
+подпись и свежесть. Админка — только для OWNER_ID: это проверяется при каждом
+запросе (`current_user`), а не по отметке в куке.
+
+Участник группы тоже может войти — на страницу участников, только чтение
+(решение владельца, TZ §9). Его кука годится лишь для `current_viewer`, а
+состоит ли он в группе, страница участников проверяет сама при каждом запросе.
 """
 from __future__ import annotations
 
@@ -87,6 +92,13 @@ def issue_session(user_id: int) -> str:
     return _serializer().dumps({"uid": user_id, "csrf": secrets.token_urlsafe(24)})
 
 
+def session_uid(session: dict[str, Any] | None) -> int:
+    try:
+        return int((session or {}).get("uid", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def read_session(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
@@ -101,12 +113,24 @@ def read_session(raw: str | None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def current_user(request: Request) -> dict[str, Any] | None:
+def current_viewer(request: Request) -> dict[str, Any] | None:
+    """Любой вошедший через Telegram: владелец или участник группы.
+
+    Годится только для страницы участников — и там же проверяется членство.
+    """
     session = read_session(request.cookies.get(COOKIE_NAME))
+    if session is None or not session_uid(session):
+        return None
+    return session
+
+
+def current_user(request: Request) -> dict[str, Any] | None:
+    """Владелец — единственный, кому открыта админка."""
+    session = current_viewer(request)
     if session is None:
         return None
-    if int(session.get("uid", 0)) != cfg.OWNER_ID:
-        # владелец мог смениться в конфиге — старая кука больше не годится
+    if session_uid(session) != cfg.OWNER_ID:
+        # чужая кука или владелец сменился в конфиге — в админку не пускаем
         return None
     return session
 

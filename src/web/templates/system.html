@@ -1,49 +1,63 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, badge, empty %}
 {% block title %}Система{% endblock %}
 {% block h1 %}Система{% endblock %}
+{% block lead %}<p class="lead">Живы ли процессы и ручные действия. Время — по часам бота: {{ now.strftime('%d.%m.%Y %H:%M') }}.</p>{% endblock %}
 {% block content %}
-<div class="card">
-  <h2 style="margin-top:0">Отметки процессов</h2>
-  <p class="muted">Сейчас по часам бота: {{ now.strftime('%d.%m.%Y %H:%M') }}</p>
-  {% if states %}
-    <table>
-      {% for key, value in states.items() %}
-        <tr><td><code>{{ key }}</code></td><td class="muted">{{ value }}</td></tr>
-      {% endfor %}
-    </table>
-  {% else %}
-    <p class="muted">Отметок нет — процессы ещё не запускались.</p>
-  {% endif %}
-  <p class="muted">В очереди расшифровки: {{ pending_media }}</p>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Ручной запуск</h2>
-  <form method="post" action="/system/digest" style="margin-bottom:12px">
-    <input type="hidden" name="csrf_token" value="{{ csrf }}">
-    <label>Собрать дайджест</label>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <select name="chat_id" style="max-width:260px">
-        {% for chat in chats %}
-          <option value="{{ chat.id }}">{{ chat.title or chat.tg_id }}</option>
-        {% endfor %}
-      </select>
-      <input type="text" name="day" placeholder="2026-09-20" style="max-width:160px">
-      <button type="submit">Собрать</button>
+<section class="card">
+  <div class="card-head"><h2>Процессы</h2></div>
+  <div class="rows">
+    {% for p in processes %}
+      <div class="row">
+        <div class="text"><div class="title">{{ p.title }}</div><div class="hint">{{ p.detail }}</div></div>
+        <div class="control">{{ badge(p.label, p.status) }}</div>
+      </div>
+    {% else %}
+      {{ empty('Отметок нет', 'Процессы ещё не запускались.', 'pulse') }}
+    {% endfor %}
+    <div class="row">
+      <div class="text"><div class="title">Очередь расшифровки</div><div class="hint">голосовые, которые ещё ждут текста</div></div>
+      <div class="control"><b class="num">{{ pending_media }}</b></div>
     </div>
-    <p class="muted">Пересобирает и сохраняет, но никому не отправляет.</p>
-  </form>
+  </div>
+  <p class="muted small" style="margin-top:8px">«Молчит» — процесс давно не отмечался: скорее всего, он перезапускается или упал. Причина — в логе приложения на хостинге.</p>
+</section>
 
-  <form method="post" action="/system/reindex">
-    <input type="hidden" name="csrf_token" value="{{ csrf }}">
-    <button class="ghost" type="submit">Переиндексировать для поиска</button>
-  </form>
-</div>
+<div class="grid two">
+  <section class="card">
+    <div class="card-head"><div><h2>Собрать дайджест вручную</h2><p class="muted small">Пересобирает и сохраняет, но никому не отправляет.</p></div></div>
+    <form method="post" action="/system/digest" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      {% if chats|length > 1 %}
+        <div>
+          <label class="field" for="sys-chat">Группа</label>
+          <select id="sys-chat" name="chat_id">
+            {% for chat in chats %}<option value="{{ chat.id }}">{{ chat_name(chat) }}</option>{% endfor %}
+          </select>
+        </div>
+      {% elif chats %}
+        <input type="hidden" name="chat_id" value="{{ chats[0].id }}">
+      {% endif %}
+      <div>
+        <label class="field" for="sys-day">День</label>
+        <input id="sys-day" type="date" name="day" value="{{ now.strftime('%Y-%m-%d') }}">
+      </div>
+      <div><button class="btn" type="submit" {{ 'disabled' if not chats }}>{{ icon('play', 'sm') }}Собрать</button></div>
+    </form>
+  </section>
 
-<div class="card">
-  <h2 style="margin-top:0">Экспорт</h2>
-  {% for chat in chats %}
-    <p><a href="/system/export/{{ chat.id }}">{{ chat.title or chat.tg_id }} — сегодня в JSON</a></p>
-  {% endfor %}
+  <section class="card">
+    <div class="card-head"><div><h2>Поиск по истории</h2><p class="muted small">Бот сам обновляет индекс каждый час. Вручную — если поиск не находит свежее.</p></div></div>
+    <form method="post" action="/system/reindex">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button class="btn ghost" type="submit">{{ icon('search', 'sm') }}Переиндексировать</button>
+    </form>
+    <div class="card-head" style="margin-top:22px"><div><h2>Выгрузка</h2><p class="muted small">Сообщения за сегодня в JSON — только вам.</p></div></div>
+    <div class="btn-row">
+      {% for chat in chats %}
+        <a class="btn ghost sm" href="/system/export/{{ chat.id }}">{{ icon('download', 'sm') }}{{ chat_name(chat) }}</a>
+      {% endfor %}
+    </div>
+  </section>
 </div>
 {% endblock %}

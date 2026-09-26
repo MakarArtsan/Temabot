@@ -1,71 +1,90 @@
 {% extends "base.html" %}
-{% block title %}Дайджест{% endblock %}
-{% block h1 %}Дайджест «{{ chat.title if chat and chat.title else digest.chat_id }}» за {{ digest.day.strftime('%d.%m.%Y') }}{% endblock %}
+{% from "_ui.html" import icon, badge, empty %}
+{% block title %}Дайджест {{ digest.day.strftime('%d.%m') }}{% endblock %}
+{% block eyebrow %}<a class="eyebrow" href="/digests">{{ icon('back', 'sm') }} Все дайджесты</a>{% endblock %}
+{% block h1 %}{{ chat_name(chat) if chat else 'Дайджест' }} · {{ digest.day.strftime('%d.%m.%Y') }}{% endblock %}
+{% block lead %}<p class="lead">{{ num(digest.msg_count or 0) }} сообщений · {{ shown|length }} {{ plural(shown|length, 'тема прошла', 'темы прошли', 'тем прошли') }} отбор, {{ missed|length }} отсеяно.</p>{% endblock %}
+
 {% block content %}
 {% macro topic_card(item, missed) %}
-  <div class="topic {{ 'missed' if missed else 'shown' }}">
-    <strong>{{ item.title }}</strong>
-    <span class="pill">{{ item.kind or 'other' }}</span>
-    <span class="pill {{ 'off' if missed else 'on' }}">
-      скор {{ '%.3f'|format(item.score or 0) }}
-      {% if item.features and item.features.threshold %}
-        при пороге {{ '%.2f'|format(item.features.threshold) }}
-      {% endif %}
-    </span>
-    {% if item.features and item.features.takeaway %}
-      <div>{{ item.features.takeaway }}</div>
-    {% endif %}
-    {% if item.features and item.features.why %}
-      <div class="muted">Почему важно: {{ item.features.why }}</div>
-    {% endif %}
-    {% if item.features %}
-      <div class="muted" style="margin-top:6px">
-        вовлечённость {{ '%.2f'|format(item.features.engagement or 0) }} ·
-        применимость {{ '%.2f'|format(item.features.usefulness or 0) }} ·
-        конкретика {{ '%.2f'|format(item.features.specificity or 0) }} ·
-        релевантность {{ '%.2f'|format(item.features.relevance or 0) }} ·
-        новизна {{ '%.2f'|format(item.features.novelty or 0) }}
-        {% if item.features.penalty %}· штраф {{ '%.2f'|format(item.features.penalty) }}{% endif %}
-        {% if item.features.is_repeat %}· <span class="pill warn">повтор</span>{% endif %}
+  {% set f = item.features or {} %}
+  <article class="topic {{ 'missed' if missed }}">
+    <div class="head">
+      <h3>{{ item.title }}</h3>
+      {{ badge(kind_label(item.kind)) }}
+    </div>
+    {% if f.takeaway %}<p class="takeaway">{{ f.takeaway }}</p>{% endif %}
+    {% if f.why %}<p class="why">Почему важно: {{ f.why }}</p>{% endif %}
+
+    <div style="margin-top:12px">
+      <div class="btn-row small" style="justify-content:space-between">
+        <span>Оценка <b class="num">{{ '%.2f'|format(item.score or 0) }}</b>
+          {% if f.get('threshold') is not none %}<span class="muted">при пороге {{ '%.2f'|format(f.threshold) }}</span>{% endif %}</span>
+        {% if f.is_repeat %}{{ badge('повтор недавней темы', 'warn') }}{% endif %}
       </div>
-      <details>
-        <summary class="muted">все признаки</summary>
-        <pre style="font-size:12px;white-space:pre-wrap">{{ item.features }}</pre>
-      </details>
-    {% endif %}
-    <div id="fb-{{ item.id }}" style="margin-top:6px">
-      {% for value, label in [(1,'👍 полезно'), (-1,'👎 мимо'), (-2,'🔕 не показывать')] %}
-        <button class="ghost" hx-post="/feedback/{{ item.id }}"
+      <div class="meter" style="margin-top:6px"><i style="width:{{ [((item.score or 0) * 100)|round|int, 100]|min }}%"></i></div>
+    </div>
+    <div class="scores">
+      {% for key, label in feature_labels %}
+        {% if f.get(key) is not none %}<span class="score-chip">{{ label }} <b>{{ '%.2f'|format(f.get(key) or 0) }}</b></span>{% endif %}
+      {% endfor %}
+      {% if f.penalty %}<span class="score-chip">штраф <b>−{{ '%.2f'|format(f.penalty) }}</b></span>{% endif %}
+    </div>
+
+    <div class="fb" id="fb-{{ item.id }}">
+      {% for value, label, hint in [(1, '👍 Полезно', 'Такие темы показывать чаще'), (-1, '👎 Мимо', 'Такие темы показывать реже'), (-2, '🔕 Не показывать', 'Такие темы больше не нужны')] %}
+        <button class="btn ghost sm" title="{{ hint }}" hx-post="/feedback/{{ item.id }}"
                 hx-target="#fb-{{ item.id }}" hx-swap="innerHTML"
                 hx-vals='{"value":"{{ value }}","csrf_token":"{{ csrf }}"}'>{{ label }}</button>
       {% endfor %}
     </div>
-  </div>
+    {% if f %}
+      <details class="more">
+        <summary>Все признаки для отладки</summary>
+        <pre class="tg-post" style="font-size:12px">{{ f }}</pre>
+      </details>
+    {% endif %}
+  </article>
 {% endmacro %}
 
-<div class="card">
-  <h2 style="margin-top:0">Так его увидит группа</h2>
-  {% for part in preview %}
-    {# текст собран render_html: всё, что пришло от людей и модели, уже экранировано #}
-    <div class="tg-post">{{ part|safe }}</div>
-  {% else %}
-    <p class="muted">У этого дайджеста нет сохранённой структуры — пересобери его на странице «Система».</p>
-  {% endfor %}
-  {% include "_publish_box.html" %}
+<div class="grid main-side">
+  <section class="card">
+    <div class="card-head">
+      <div><h2>Так его увидит группа</h2><p class="muted small">Тот же текст, что уйдёт в Telegram, — без кнопок оценки.</p></div>
+    </div>
+    {% for part in preview %}
+      {# текст собран render_html: всё, что пришло от людей и модели, уже экранировано #}
+      <div class="tg-post">{{ part|safe }}</div>
+    {% else %}
+      <p class="muted">У этого дайджеста нет сохранённой структуры — пересоберите его на странице «Система».</p>
+    {% endfor %}
+  </section>
+
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><h2>Публикация в группе</h2></div>
+      {% include "_publish_box.html" %}
+    </section>
+    <div class="note">{{ icon('info') }}<p>Кнопки под темами учат отбор вашему вкусу:
+      «👍 Полезно» — таких тем больше, «👎 Мимо» — меньше, «🔕 Не показывать» — такие не нужны совсем.
+      Раз в неделю бот предлагает новые веса на странице «Обучение».</p></div>
+  </div>
 </div>
 
-<div class="card">
-  <h2 style="margin-top:0">Попали в дайджест ({{ shown|length }})</h2>
+<section class="card section">
+  <div class="card-head"><h2>Попали в дайджест · {{ shown|length }}</h2></div>
   {% for item in shown %}{{ topic_card(item, false) }}{% else %}
     <p class="muted">Ни одна тема не прошла порог.</p>
   {% endfor %}
-</div>
+</section>
 
-<div class="card">
-  <h2 style="margin-top:0">Отсеяно ({{ missed|length }})</h2>
-  <p class="muted">Если здесь есть важное, поставь 👍 — порог и веса подстроятся.</p>
+<section class="card">
+  <div class="card-head">
+    <div><h2>Отсеяно · {{ missed|length }}</h2>
+      <p class="muted small">Если здесь есть важное, нажмите «👍 Полезно» — отбор это учтёт.</p></div>
+  </div>
   {% for item in missed %}{{ topic_card(item, true) }}{% else %}
     <p class="muted">Отсеянных тем нет.</p>
   {% endfor %}
-</div>
+</section>
 {% endblock %}

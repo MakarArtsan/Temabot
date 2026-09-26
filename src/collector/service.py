@@ -15,6 +15,7 @@ from telethon import events
 
 from src.collector.client import build_client, with_flood_retry
 from src.collector.handlers import AuthorCache, normalize_message
+from src.collector.members import on_membership_change, sync_loop
 from src.config import cfg
 from src.db import repo
 from src.db.models import Chat
@@ -62,6 +63,20 @@ class Collector:
 
     def chat_for(self, chat_tg_id: int) -> Chat | None:
         return self._chats_by_tg_id.get(chat_tg_id)
+
+    async def refresh_titles(self, chats: list[Chat]) -> int:
+        """Настоящие названия групп — иначе в админке и дайджесте видно только id."""
+        if self.dry_run:
+            return 0
+        updated = 0
+        for chat in chats:
+            try:
+                entity = await self.client.get_entity(chat.tg_id)
+                if await repo.set_chat_title(chat.tg_id, getattr(entity, "title", None)):
+                    updated += 1
+            except Exception:
+                log.warning("Не удалось узнать название группы %s", chat.tg_id, exc_info=True)
+        return updated
 
     # ------------------------------------------------------------- запись в БД
 
@@ -130,6 +145,18 @@ class Collector:
         for target in self._chats_by_tg_id.values():
             await repo.soft_delete_messages(target.id, ids)
 
+    async def on_chat_action(self, event: Any) -> None:
+        """Переименование группы, вход и выход участников."""
+        chat = self.chat_for(event.chat_id)
+        if chat is None or self.dry_run:
+            return
+        try:
+            if getattr(event, "new_title", None):
+                await repo.set_chat_title(chat.tg_id, event.new_title)
+            await on_membership_change(chat, event)
+        except Exception:
+            log.exception("Не удалось обработать событие в чате %s", chat.tg_id)
+
     # ------------------------------------------------------------- докачка
 
     async def catch_up(self, chat: Chat) -> int:
@@ -190,6 +217,7 @@ def register_handlers(collector: Collector, chat_ids: list[int]) -> None:
     client.add_event_handler(collector.on_new_message, events.NewMessage(chats=chat_ids))
     client.add_event_handler(collector.on_message_edited, events.MessageEdited(chats=chat_ids))
     client.add_event_handler(collector.on_message_deleted, events.MessageDeleted())
+    client.add_event_handler(collector.on_chat_action, events.ChatAction(chats=chat_ids))
 
 
 def build_media_queue(*, dry_run: bool) -> MediaQueue | NullMediaQueue:
@@ -292,6 +320,9 @@ async def run(*, dry_run: bool = False) -> None:
             "или включи группу в админке."
         )
     log.info("Слушаю чаты: %s", [c.tg_id for c in chats])
+    if await collector.refresh_titles(chats):
+        # в памяти коллектора тоже нужны свежие названия — для логов бэкфилла
+        chats = await collector.load_target_chats()
 
     # очередь медиа нужна уже во время заливки: голосовые из истории тоже расшифруем
     await media.start()
@@ -307,8 +338,12 @@ async def run(*, dry_run: bool = False) -> None:
 
     register_handlers(collector, [c.tg_id for c in chats])
     heartbeat = asyncio.create_task(collector.heartbeat_loop())
+    # список участников — для страницы участников; в dry-run ничего не пишем
+    members = None if dry_run else asyncio.create_task(sync_loop(client, chats))
     try:
         await client.run_until_disconnected()
     finally:
         heartbeat.cancel()
+        if members is not None:
+            members.cancel()
         await media.stop()

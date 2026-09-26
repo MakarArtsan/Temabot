@@ -1,0 +1,46 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, chart, empty %}
+{% block title %}Рейтинги · {{ chat_name(chat) }}{% endblock %}
+{% block head %}<script src="/static/vendor/chart.umd.min.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block content %}
+{% set tab = 'ratings' %}
+{% include "portal/_group_head.html" %}
+
+<div class="btn-row" style="justify-content:space-between;margin-bottom:14px">
+  <div class="seg" role="radiogroup" aria-label="Период">
+    {% for key, label in [('day','День'), ('week','Неделя'), ('month','Месяц')] %}
+      <a class="{{ 'on' if period.key == key }}" href="/g/{{ chat.id }}/ratings?period={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <span class="muted small">{{ period.date_from.strftime('%d.%m') }} — {{ period.date_to.strftime('%d.%m') }}</span>
+</div>
+
+{% if not has_rows %}
+  <div class="card">{{ empty('За этот период рейтинга ещё нет', 'Он считается каждый вечер. Загляните завтра или выберите другой период.', 'trophy') }}</div>
+{% else %}
+  {% if leaders.rows %}
+  <section class="card">
+    <div class="card-head"><div><h2>Самые полезные</h2><p class="muted small">из 100 — чем больше ценного вклада в обсуждения, тем выше</p></div></div>
+    {{ chart('useful', 'bars', leaders.spec, ['Участник', 'Из 100'], leaders.rows, 'Самые полезные участники', tall=leaders.rows|length > 6) }}
+  </section>
+  {% endif %}
+
+  <div class="medals">
+    {% for n, top in tops %}
+      <section class="card medal-card">
+        <h3>{{ n.title }}</h3>
+        {% for row, value in top %}
+          <div class="medal-row">
+            <span class="place">{{ ['🥇','🥈','🥉'][loop.index0] }}</span>
+            <span class="who">{{ row.name or 'Участник' }}</span>
+            <span class="val">{% if n.key == 'useful' %}{{ scale.get(row.tg_user_id, 0) }} из 100{% else %}{{ '%g'|format(value) }} {{ n.unit }}{% endif %}</span>
+          </div>
+        {% endfor %}
+      </section>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<div class="note section">{{ icon('info') }}<p>Не хотите попадать в рейтинги — напишите боту команду /optout в личку.
+  Вернуться — /optin.</p></div>
+{% endblock %}

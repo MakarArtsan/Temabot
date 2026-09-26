@@ -1,16 +1,17 @@
 {% extends "base.html" %}
+{% from "_ui.html" import icon, empty %}
 {% block title %}Участники{% endblock %}
 {% block h1 %}Участники{% endblock %}
+{% block lead %}<p class="lead">Тонкая настройка по людям: чьё мнение весомее, кого приглушить в отборе тем, кого скрыть из рейтингов и кому не отвечать копировщиком.</p>{% endblock %}
 {% block content %}
-<div class="card">
-  {% if authors %}
-    <table>
-      <tr><th>Кто</th><th>Сообщений</th><th>Вес мнения</th><th>Дайджест</th>
-          <th>Копировщик</th><th>Рейтинги</th></tr>
-      {% for author in authors %}{% include "_author_row.html" %}{% endfor %}
-    </table>
-  {% else %}<p class="muted">Участников пока нет.</p>{% endif %}
-</div>
-<p class="muted">Вес мнения поднимает темы, где участвовал этот человек.
-  Заглушённые штрафуются в отборе, заблокированным не отвечает копировщик.</p>
+<section class="card">
+  <div class="rows">
+    {% for author in authors %}{% include "_author_row.html" %}{% else %}
+      {{ empty('Участников пока нет', 'Они появятся, когда сборщик сохранит первые сообщения.', 'user') }}
+    {% endfor %}
+  </div>
+</section>
+<div class="note">{{ icon('info') }}<p><b>Вес мнения</b> — 1 обычный, 2 — темы с участием человека заметно выше.
+  <b>Приглушить</b> — темы с его участием получают штраф: тем больше, чем больше в теме приглушённых (размер штрафа — на странице «Отбор тем»).
+  Скрыться из рейтингов участник может и сам — командой /optout боту.</p></div>
 {% endblock %}

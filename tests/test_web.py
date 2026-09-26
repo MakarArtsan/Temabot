@@ -267,21 +267,28 @@ def test_groups_page_shows_toggles(owner_client: Any):
     text = owner_client.get("/groups").text
 
     assert "Рабочая" in text
-    assert "сбор включён" in text
+    assert "Читать сообщения группы" in text
+    assert 'aria-label="Читать сообщения группы"' in text
     assert "hx-post=\"/groups/-100111\"" in text
 
 
-def test_selection_page_shows_weights(owner_client: Any):
+def test_selection_page_explains_every_setting(owner_client: Any):
+    """Вместо w_eng и penalty_drama — человеческие названия с пояснениями."""
+    from src.web import labels
+
     text = owner_client.get("/selection").text
 
-    assert "Профиль интересов" in text
-    assert "w_use" in text and "повтор вчерашней темы" in text
-    assert "Прогнать на вчера" in text
+    assert "О чём эта группа и что вам в ней важно" in text
+    for setting in (*labels.WEIGHTS, *labels.PENALTIES):
+        assert setting.title in text and setting.hint in text
+    # имена полей формы прежние: сохранённые настройки читаются как раньше
+    assert 'name="w_use"' in text and 'name="penalty_repeat"' in text
+    assert "Строгость отбора" in text and "Проверить на прошлом дне" in text
 
 
 def test_dashboard_shows_numbers(owner_client: Any):
     text = owner_client.get("/").text
-    assert "42" in text and "Очередь расшифровки" in text
+    assert "всего собрано: 42" in text and "Голосовые" in text
 
 
 # ====================================================== проверка живости
@@ -377,7 +384,7 @@ def test_published_digest_offers_removal(digest_page: Any):
 
     assert "Опубликован в группе 24.09 23:31" in text, "время — по Москве"
     assert deeplink(-100111, 501) in text
-    assert "убрать из группы" in text
+    assert "Убрать из группы" in text
 
 
 def test_publish_from_admin(digest_page: Any, monkeypatch: pytest.MonkeyPatch):
@@ -482,7 +489,8 @@ def test_groups_page_shows_publication_modes(owner_client: Any):
     text = owner_client.get("/groups").text
 
     assert "только мне" in text and "по кнопке" in text and "автоматически" in text
-    assert "рейтинг недели: только мне" in text
+    assert "Рейтинг недели в группе" in text
+    assert "Страница для участников" in text and "закрыта" in text
 
 
 def test_broken_token_gives_a_message_not_a_crash(

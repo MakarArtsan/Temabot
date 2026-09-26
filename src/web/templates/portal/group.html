@@ -1,0 +1,52 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, badge, chart, empty %}
+{% block title %}{{ chat_name(chat) }}{% endblock %}
+{% block head %}<script src="/static/vendor/chart.umd.min.js?v={{ asset_version }}" defer></script>{% endblock %}
+{% block content %}
+{% set tab = 'digests' %}
+{% include "portal/_group_head.html" %}
+
+{% if not digests %}
+  <div class="card">{{ empty('Дайджестов пока нет', 'Первый появится вечером, после того как бот разберёт переписку за день.', 'digest') }}</div>
+{% else %}
+  {% if latest %}
+  <section class="card">
+    <div class="card-head">
+      <div><p class="eyebrow" style="margin:0">Последний дайджест</p>
+        <h2>{{ weekday(digests[0].day)|capitalize }}, {{ digests[0].day.strftime('%d.%m.%Y') }}</h2></div>
+      <a class="btn sm" href="/g/{{ chat.id }}/d/{{ digests[0].day.isoformat() }}">Читать {{ icon('chevron', 'sm') }}</a>
+    </div>
+    {% if latest.highlights %}
+      <ul class="highlights">
+        {% for line in latest.highlights[:3] %}<li>{{ icon('pin') }}<span>{{ line }}</span></li>{% endfor %}
+      </ul>
+    {% elif latest.topics %}
+      <ul class="plain-list">{% for t in latest.topics[:4] %}<li>{{ t.title }}</li>{% endfor %}</ul>
+    {% else %}
+      <p class="muted">Тихий день — ничего заметного не обсуждали.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if activity.has_data %}
+  <section class="card">
+    <div class="card-head"><div><h2>Сообщений в день</h2><p class="muted small">последние 30 дней</p></div></div>
+    {{ chart('activity', 'columns', activity.spec, ['День', 'Сообщений'], activity.rows, 'Сообщений в группе по дням') }}
+  </section>
+  {% endif %}
+
+  <section class="card day-list">
+    <div class="card-head"><h2>Архив</h2><span class="muted small">{{ digests|length }} {{ plural(digests|length, 'день', 'дня', 'дней') }}</span></div>
+    {% for d in digests %}
+      <a class="row-link" href="/g/{{ chat.id }}/d/{{ d.day.isoformat() }}">
+        <span class="day"><b>{{ d.day.day }}</b><span>{{ month_short(d.day) }}</span></span>
+        <div class="text">
+          <div class="title">{{ d.headline }}</div>
+          <div class="hint">{{ weekday(d.day) }} · {{ d.topics_count }} {{ plural(d.topics_count, 'тема', 'темы', 'тем') }} · {{ num(d.msg_count) }} сообщ.</div>
+        </div>
+        {{ icon('chevron', 'chev') }}
+      </a>
+    {% endfor %}
+  </section>
+{% endif %}
+{% endblock %}
