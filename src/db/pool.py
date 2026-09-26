@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 import asyncpg
 
@@ -26,6 +27,32 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
         )
 
 
+def dsn_problem(dsn: str) -> str | None:
+    """Что не так со строкой подключения — без самой строки: в ней пароль.
+
+    Самая частая беда — спецсимволы в пароле. `/`, `#`, `?` и `@` ломают разбор
+    адреса, и asyncpg падает с ошибкой, в текст которой попадает кусок пароля.
+    """
+    if not dsn:
+        return "Не задан DATABASE_URL"
+    parts = urlsplit(dsn)
+    if parts.scheme not in ("postgres", "postgresql"):
+        return "DATABASE_URL должен начинаться с postgresql://"
+    try:
+        parts.port  # noqa: B018 — сам разбор порта и есть проверка
+    except ValueError:
+        return (
+            "DATABASE_URL не разбирается: в пароле, скорее всего, есть символы "
+            "/ # ? @ или :. Смените пароль базы на буквы и цифры "
+            "(Supabase → Settings → Database → Reset password) и обновите DATABASE_URL"
+        )
+    if not parts.hostname:
+        return "В DATABASE_URL нет адреса сервера базы"
+    if dsn.count("@") > 1:
+        return "В пароле DATABASE_URL есть символ @ — смените пароль базы на буквы и цифры"
+    return None
+
+
 def uses_transaction_pooler(dsn: str) -> bool:
     """Похоже ли, что подключение идёт через пулер в режиме транзакций.
 
@@ -45,6 +72,10 @@ async def get_pool(dsn: str | None = None) -> asyncpg.Pool:
         return _pool
 
     target = dsn or cfg.DATABASE_URL
+    problem = dsn_problem(target)
+    if problem:
+        # from None: иначе в трейсбек попадёт разбор строки вместе с паролем
+        raise RuntimeError(problem) from None
     extra: dict[str, Any] = {}
     if cfg.DB_DISABLE_STATEMENT_CACHE or uses_transaction_pooler(target):
         # без этого через пулер-транзакций сыплется DuplicatePreparedStatementError

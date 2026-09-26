@@ -266,3 +266,55 @@ def test_config_errors_are_readable_and_hide_values(monkeypatch: pytest.MonkeyPa
 
     assert problems and "TG_API_ID" in problems
     assert "секрет-не-число" not in problems
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://postgres.x:yaNbByS9$/rest@h.pooler.supabase.com:5432/postgres",
+        "postgresql://postgres.x:yaNbByS9$#rest@h.pooler.supabase.com:5432/postgres",
+        "postgresql://postgres.x:pa@ss@h.pooler.supabase.com:5432/postgres",
+    ],
+)
+def test_broken_database_url_is_explained_without_the_password(dsn: str):
+    """Спецсимволы в пароле ломают разбор адреса, а asyncpg пишет кусок пароля в лог."""
+    from src.db.pool import dsn_problem
+
+    problem = dsn_problem(dsn)
+
+    assert problem and "пароль" in problem.lower()
+    assert "yaNbByS9" not in problem and "pa@ss" not in problem
+
+
+def test_good_database_url_passes():
+    from src.db.pool import dsn_problem
+
+    good = "postgresql://postgres.x:abc123XYZ@h.pooler.supabase.com:5432/postgres"
+    assert dsn_problem(good) is None
+
+
+async def test_broken_database_url_keeps_web_and_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """Со сломанной строкой базы админка работает, а bot и collector ждут исправления."""
+    started: list[str] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*argv: str, **kw: object):
+        started.append(argv[-1])
+        return await real_exec(sys.executable, "-c", "import time; time.sleep(60)", **kw)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    stop = asyncio.Event()
+    broken = "postgresql://u:secret/part@h:5432/db"
+    task = asyncio.create_task(
+        supervisor.supervise(settings(tmp_path, DATABASE_URL=broken), stop=stop,
+                             install_signals=False)
+    )
+    await asyncio.sleep(0.3)
+    stop.set()
+    await asyncio.wait_for(task, 10)
+
+    assert started == [supervisor.SERVICE_MODULES["web"]], "без миграции и без bot/collector"
+    assert "DATABASE_URL не разбирается" in caplog.text
+    assert "secret" not in caplog.text

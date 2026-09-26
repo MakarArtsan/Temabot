@@ -239,8 +239,16 @@ async def supervise(
             log.info("Запускаю: web")
             tasks.append(asyncio.create_task(run_service(services["web"], stop)))
 
+        # импорт здесь: src.db.pool читает настройки при импорте, а main() должен
+        # успеть сам сообщить об их ошибках
+        from src.db.pool import dsn_problem
+
         rest = [name for name in plan.run if name != "web"]
-        if rest and await migrate(env, stop):
+        problem = dsn_problem(settings.DATABASE_URL)
+        if rest and problem:
+            # повторять подключение бессмысленно: строка сломана, нужен человек
+            await _idle(stop, f"bot и collector не запущены. {problem}")
+        elif rest and await migrate(env, stop):
             log.info("Запускаю: %s", ", ".join(rest))
             tasks += [asyncio.create_task(run_service(services[n], stop)) for n in rest]
 
