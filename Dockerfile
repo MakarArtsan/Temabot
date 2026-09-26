@@ -7,7 +7,10 @@ FROM python:3.11-slim
 # EXTRAS решает, какие необязательные зависимости попадут в образ.
 # По умолчанию без `embed`: sentence-transformers тянет torch, а это ~2 ГБ и
 # около 2 ГБ ОЗУ сверху. В продакшене эмбеддинги берутся через API (TZ §6).
-ARG EXTRAS=media,web,ml
+# И без `media`: голосовые расшифровывает Telegram Premium (ASR_PROVIDER=telegram),
+# а локальный whisper с ffmpeg — это ещё ~700 МБ образа. Нужен whisper —
+# собрать с --build-arg EXTRAS=media,web,ml и задать ASR_PROVIDER=auto.
+ARG EXTRAS=web,ml
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -16,13 +19,15 @@ ENV PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
     TG_SESSION=/data/collector.session \
     WEB_HOST=0.0.0.0 \
-    WEB_PORT=80
+    WEB_PORT=80 \
+    ASR_PROVIDER=telegram
 
 WORKDIR /app
 
-# ffmpeg нужен faster-whisper для чтения голосовых в формате ogg/opus
+# curl — для HEALTHCHECK; ffmpeg нужен только локальному whisper (ogg/opus)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg curl \
+ && case ",${EXTRAS}," in *,media,*) EXTRA_APT=ffmpeg ;; *) EXTRA_APT= ;; esac \
+ && apt-get install -y --no-install-recommends curl ${EXTRA_APT} \
  && rm -rf /var/lib/apt/lists/*
 
 # Зависимости ставим раньше кода: правка кода не пересобирает слой с пакетами

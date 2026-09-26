@@ -161,9 +161,13 @@ docker run --rm --env-file .env -p 8080:80 -v $PWD/data:/data tgdigest   # вс�
 docker run --rm -e APP_ROLE=bot --env-file .env -v $PWD/data:/data tgdigest   # только бот
 ```
 
+По умолчанию в образе нет локального whisper и ffmpeg (голосовые расшифровывает
+Telegram Premium, `ASR_PROVIDER=telegram`) — так он весит около 720 МБ вместо ~1.5 ГБ.
+Нужен whisper — `--build-arg EXTRAS=media,web,ml` и `ASR_PROVIDER=auto`.
+
 Для локальных эмбеддингов образ собирается с дополнительным набором:
 ```bash
-docker build --build-arg EXTRAS=media,web,ml,embed -t tgdigest .
+docker build --build-arg EXTRAS=web,ml,embed -t tgdigest .
 ```
 
 ## Приватность
