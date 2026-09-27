@@ -25,6 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.config import cfg
 from src.db import pool, repo
+from src.db.models import Chat
 from src.digest.publish import (
     PUBLISH_LABELS,
     PUBLISH_MODES,
@@ -50,8 +51,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     Если ждать базу на старте, недоступная база не даёт uvicorn открыть порт,
     и хостинг считает запуск проваленным, хотя /healthz мог бы честно ответить.
+    Поэтому и прерванные задачи продолжаются в фоне, не задерживая старт.
     """
+    resume = asyncio.create_task(resume_jobs())
     yield
+    resume.cancel()
     await pool.close_pool()
 
 
@@ -498,6 +502,86 @@ async def selection_save(
     return RedirectResponse(f"/selection?chat={chat_id}", status_code=303)
 
 
+def launch_preview(chat: Chat, target: date_type, *, resumed: int = 0) -> jobs.Job:
+    """Пробный прогон дня в фоне. За пустой день результат сразу ложится в архив."""
+
+    async def build() -> dict[str, Any]:
+        from src.digest import pipeline as digest_pipeline
+
+        stored = await repo.get_digest(chat.id, target)
+        # в группу и в личку ничего не уходит — только архив
+        result = await digest_pipeline.build_digest(chat, target)
+        saved_id = None
+        if stored is None and not result.llm_is_down:
+            saved_id = await digest_pipeline.save_result(chat, target, result)
+        return {
+            "chat": chat,
+            "day": target,
+            "result": result,
+            "cost": cost_of(result.usage.tokens_in, result.usage.tokens_out),
+            "old_markdown": stored.summary_md if stored else "",
+            "stored_id": stored.id if stored else None,
+            "saved_id": saved_id,
+            "topics": sorted(result.all_topics, key=lambda t: -t.score),
+        }
+
+    return jobs.start(
+        f"preview:{chat.id}:{target}", f"пробный дайджест за {target:%d.%m}", build,
+        spec={"kind": "preview", "chat_id": chat.id, "day": target.isoformat()},
+        resumed=resumed,
+    )
+
+
+def launch_digest(chat: Chat, target: date_type, *, resumed: int = 0) -> jobs.Job:
+    """Ручная сборка дня в фоне, с сохранением в архив."""
+
+    async def build() -> int | None:
+        from src.digest import pipeline as digest_pipeline
+
+        result = await digest_pipeline.run_for_chat(chat, target, save=True)
+        return result.digest_id
+
+    return jobs.start(
+        f"digest:{chat.id}:{target}", f"дайджест за {target:%d.%m}", build,
+        spec={"kind": "digest", "chat_id": chat.id, "day": target.isoformat()},
+        resumed=resumed,
+    )
+
+
+LAUNCHERS = {"preview": launch_preview, "digest": launch_digest}
+
+
+async def resume_jobs() -> None:
+    """Продолжить задачи, прерванные перезапуском (выкладка, падение контейнера)."""
+    if not cfg.DATABASE_URL:
+        return
+    from src.llm.client import CACHE_DAYS
+
+    try:
+        await repo.prune_llm_cache(CACHE_DAYS)
+    except Exception:
+        log.warning("Старый кэш ответов модели не почистился", exc_info=True)
+    try:
+        waiting = await jobs.pending()
+    except Exception:
+        log.warning("Не удалось проверить прерванные задачи", exc_info=True)
+        return
+    for key, spec in waiting:
+        resumed = int(spec.get("resumed") or 0) + 1
+        launcher = LAUNCHERS.get(str(spec.get("kind")))
+        try:
+            chat = await repo.get_chat_by_id(int(spec.get("chat_id") or 0))
+            target = date_type.fromisoformat(str(spec.get("day")))
+        except (TypeError, ValueError):
+            chat = None
+        if launcher is None or chat is None or resumed > jobs.MAX_RESUMES:
+            log.error("Задачу «%s» не продолжаю (%s-я попытка)", key, resumed)
+            await repo.delete_state(jobs.STATE_PREFIX + key)
+            continue
+        log.warning("Продолжаю «%s» после перезапуска", spec.get("title") or key)
+        launcher(chat, target, resumed=resumed)
+
+
 @app.post("/selection/{chat_id}/preview", response_class=HTMLResponse)
 async def selection_preview(
     request: Request, chat_id: int, day: str = Form(""), csrf_token: str = Form(""),
@@ -522,27 +606,7 @@ async def selection_preview(
         return render(request, "_preview.html", {"error": "дата должна быть вида 2026-09-20",
                                                  "day": local_today()})
 
-    async def build() -> dict[str, Any]:
-        from src.digest import pipeline as digest_pipeline
-
-        stored = await repo.get_digest(chat.id, target)
-        # в группу и в личку ничего не уходит — только архив
-        result = await digest_pipeline.build_digest(chat, target)
-        saved_id = None
-        if stored is None and not result.llm_is_down:
-            saved_id = await digest_pipeline.save_result(chat, target, result)
-        return {
-            "chat": chat,
-            "day": target,
-            "result": result,
-            "cost": cost_of(result.usage.tokens_in, result.usage.tokens_out),
-            "old_markdown": stored.summary_md if stored else "",
-            "stored_id": stored.id if stored else None,
-            "saved_id": saved_id,
-            "topics": sorted(result.all_topics, key=lambda t: -t.score),
-        }
-
-    job = jobs.start(f"preview:{chat.id}:{target}", f"пробный дайджест за {target:%d.%m}", build)
+    job = launch_preview(chat, target)
     return render(request, "_job.html", {"job": job, "view": "preview"})
 
 
@@ -551,8 +615,16 @@ async def job_status(
     request: Request, job_id: str, view: str = "digest", _: dict = Depends(auth.require_owner)
 ) -> HTMLResponse:
     """Состояние фоновой задачи — страница опрашивает его, пока задача идёт."""
+    view = "preview" if view == "preview" else "digest"
     job = jobs.get(job_id)
     if job is None:
+        # после перезапуска задача поднимается не сразу — пусть страница подождёт
+        if await _job_is_pending(job_id):
+            return HTMLResponse(
+                f'<div class="note accent" hx-get="/jobs/{job_id}?view={view}" '
+                'hx-trigger="load delay:3s" hx-swap="outerHTML"><p>Сервер перезапускался — '
+                "сейчас продолжу с того же места.</p></div>"
+            )
         return HTMLResponse('<p class="muted">Задача не найдена — возможно, админка '
                             "перезапускалась. Запустите ещё раз.</p>")
     if job.done and view == "preview":
@@ -560,6 +632,15 @@ async def job_status(
             return render(request, "_preview.html", {"error": job.error, "day": None})
         return render(request, "_preview.html", {**job.result, "job_id": job.id})
     return render(request, "_job.html", {"job": job, "view": view})
+
+
+async def _job_is_pending(job_id: str) -> bool:
+    if not cfg.DATABASE_URL:
+        return False
+    try:
+        return any(jobs.job_id(key) == job_id for key, _ in await jobs.pending())
+    except Exception:
+        return False
 
 
 @app.post("/jobs/{job_id}/save", response_class=HTMLResponse)
@@ -933,8 +1014,6 @@ async def system_run_digest(
 ) -> Response:
     """Ручной запуск дайджеста (TZ §4.9). Отправки нет — только пересборка."""
     auth.check_csrf(request, csrf_token)
-    from src.digest import pipeline as digest_pipeline
-
     chat = await repo.get_chat_by_id(chat_id)
     if chat is None:
         raise HTTPException(404, "Группа не найдена")
@@ -943,12 +1022,8 @@ async def system_run_digest(
     except ValueError:
         raise HTTPException(400, "Дата должна быть вида 2026-09-20") from None
 
-    async def build() -> int | None:
-        result = await digest_pipeline.run_for_chat(chat, target, save=True)
-        return result.digest_id
-
     # сборка идёт минутами — в фоне, а страница «Система» показывает, как она идёт
-    job = jobs.start(f"digest:{chat.id}:{target}", f"дайджест за {target:%d.%m}", build)
+    job = launch_digest(chat, target)
     return RedirectResponse(f"/system?job={job.id}", status_code=303)
 
 

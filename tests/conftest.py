@@ -33,7 +33,7 @@ async def db(dsn: str) -> AsyncIterator[None]:
         """
         truncate messages, chunks, digest_items, digests, feedback, qa_log,
                  thread_contrib, author_stats_daily, llm_usage, chats, authors,
-                 copier_blocklist, state, settings
+                 copier_blocklist, state, settings, llm_cache
         restart identity cascade
         """
     )

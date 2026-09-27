@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -18,6 +19,12 @@ from src.db import repo
 log = logging.getLogger(__name__)
 
 _client: Any = None
+
+# Ответы на разбор дня кэшируются: прерванная сборка (перезапуск, выкладка)
+# продолжается за секунды и без повторной оплаты. Вопросы к боту не кэшируются —
+# там один и тот же вопрос через день должен получить свежий ответ.
+CACHED_PURPOSES = frozenset({"summary", "score", "article"})
+CACHE_DAYS = 14
 
 # ```json ... ``` — модели любят заворачивать ответ в разметку, даже когда просишь не надо
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
@@ -41,6 +48,8 @@ class Usage:
 class LLMReply:
     text: str
     usage: Usage
+    cache_key: str = ""      # непусто — ответ можно положить в кэш
+    from_cache: bool = False
 
 
 def get_client() -> Any:
@@ -103,8 +112,13 @@ async def chat(
     max_tokens: int | None = None,
     attempts: int = 3,
     json_mode: bool = False,
+    cached: bool = False,
 ) -> LLMReply:
-    """Запрос к модели с повторами и учётом токенов в llm_usage."""
+    """Запрос к модели с повторами и учётом токенов в llm_usage.
+
+    cached=True — сначала смотрим кэш; положить ответ туда — дело вызывающего,
+    когда он убедился, что ответ годный (иначе закэшировали бы и мусор).
+    """
     client = get_client()
     extra_body = dict(cfg.llm_extra_body)
     kwargs: dict[str, Any] = {
@@ -118,6 +132,12 @@ async def chat(
         kwargs["response_format"] = {"type": "json_object"}
     if extra_body:
         kwargs["extra_body"] = extra_body
+
+    key = _cache_key(kwargs) if cached else ""
+    hit = await _cache_get(key)
+    if hit is not None:
+        return LLMReply(text=hit, usage=Usage(model=cfg.LLM_MODEL), cache_key=key,
+                        from_cache=True)
 
     last_error: Exception | None = None
     for attempt in range(attempts):
@@ -139,7 +159,35 @@ async def chat(
 
     usage = _read_usage(response)
     await _log_usage(usage, purpose=purpose, chat_id=chat_id)
-    return LLMReply(text=_read_text(response), usage=usage)
+    return LLMReply(text=_read_text(response), usage=usage, cache_key=key)
+
+
+def _cache_key(kwargs: dict[str, Any]) -> str:
+    """Тот же адрес, модель, параметры и сообщения — тот же ключ."""
+    blob = json.dumps(
+        {"base_url": cfg.LLM_BASE_URL, **kwargs}, sort_keys=True, ensure_ascii=False, default=str
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+async def _cache_get(key: str) -> str | None:
+    """Кэш — только ускорение: без базы или при её сбое просто идём к модели."""
+    if not key or not cfg.DATABASE_URL:
+        return None
+    try:
+        return await repo.get_llm_cache(key, max_age_days=CACHE_DAYS)
+    except Exception:
+        log.warning("Кэш ответов модели не прочитался", exc_info=True)
+        return None
+
+
+async def _cache_put(key: str, purpose: str, text: str) -> None:
+    if not key or not cfg.DATABASE_URL or not text.strip():
+        return
+    try:
+        await repo.put_llm_cache(key, purpose, text)
+    except Exception:
+        log.warning("Ответ модели не записался в кэш", exc_info=True)
 
 
 async def chat_json(
@@ -158,8 +206,12 @@ async def chat_json(
         temperature=temperature,
         max_tokens=max_tokens,
         json_mode=True,
+        cached=purpose in CACHED_PURPOSES,
     )
-    return extract_json(reply.text), reply.usage
+    data = extract_json(reply.text)
+    if reply.cache_key and not reply.from_cache:
+        await _cache_put(reply.cache_key, purpose, reply.text)
+    return data, reply.usage
 
 
 def _read_text(response: Any) -> str:

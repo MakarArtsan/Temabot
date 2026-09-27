@@ -881,6 +881,44 @@ async def set_state(key: str, value: Any) -> None:
     )
 
 
+async def delete_state(key: str) -> None:
+    await pool.execute("delete from state where key = $1", key)
+
+
+# ------------------------------------------------------------------- кэш модели
+
+async def get_llm_cache(key: str, *, max_age_days: int) -> str | None:
+    value = await pool.fetchval(
+        """
+        select response from llm_cache
+         where key = $1 and created_at > now() - make_interval(days => $2)
+        """,
+        key,
+        max_age_days,
+    )
+    return None if value is None else str(value)
+
+
+async def put_llm_cache(key: str, purpose: str, response: str) -> None:
+    await pool.execute(
+        """
+        insert into llm_cache (key, purpose, response) values ($1, $2, $3)
+        on conflict (key) do update set response = excluded.response, created_at = now()
+        """,
+        key,
+        purpose,
+        response,
+    )
+
+
+async def prune_llm_cache(max_age_days: int) -> int:
+    result = await pool.execute(
+        "delete from llm_cache where created_at < now() - make_interval(days => $1)",
+        max_age_days,
+    )
+    return int(str(result).rsplit(" ", 1)[-1] or 0)
+
+
 # --------------------------------------------------------------------- дайджесты
 
 async def save_digest(

@@ -1,8 +1,10 @@
 {% from "_ui.html" import icon %}
 {% if not job.done %}
   <div class="note accent" hx-get="/jobs/{{ job.id }}?view={{ view }}" hx-trigger="load delay:3s" hx-swap="outerHTML">
-    {{ icon('clock') }}<p>Собираю {{ job.title }} — уже {{ job.elapsed }} с. Модель разбирает каждое обсуждение дня,
-      это может занять несколько минут. Страницу можно не обновлять.</p>
+    {{ icon('clock') }}<p>{% if job.resumed %}Сервер перезапускался — продолжаю {{ job.title }}: уже разобранное
+      берётся из сохранённого, заново не оплачивается. Уже {{ job.elapsed }} с.{% else %}Собираю {{ job.title }} — уже {{ job.elapsed }} с.
+      Модель разбирает каждое обсуждение дня, это может занять несколько минут.{% endif %}
+      Страницу можно не обновлять и даже закрыть — работа не потеряется.</p>
   </div>
 {% elif job.error %}
   <div class="note bad">{{ icon('alert') }}<p>Не получилось собрать {{ job.title }}: {{ job.error }}</p></div>

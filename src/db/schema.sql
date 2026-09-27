@@ -248,6 +248,17 @@ create table if not exists lore (
 );
 create unique index if not exists lore_chat_kind_title on lore (chat_id, kind, lower(title));
 
+-- Ответы модели на разбор тредов: тот же запрос — тот же ответ, без повторной оплаты.
+-- Прерванная сборка дня (перезапуск контейнера, выкладка) продолжается с того же
+-- места за секунды, а не заново за минуты и деньги. Хранится две недели.
+create table if not exists llm_cache (
+  key         text primary key,        -- sha256 модели, параметров и сообщений
+  purpose     text,
+  response    text not null,
+  created_at  timestamptz default now()
+);
+create index if not exists llm_cache_created_idx on llm_cache (created_at);
+
 -- ------------------------------------------------- приватность (TZ §9)
 
 -- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями
@@ -264,7 +275,7 @@ begin
   foreach t in array array[
     'chats', 'authors', 'copier_blocklist', 'settings', 'llm_usage', 'messages',
     'chunks', 'digests', 'digest_items', 'feedback', 'qa_log', 'thread_contrib',
-    'author_stats_daily', 'state', 'chat_members', 'lore'
+    'author_stats_daily', 'state', 'chat_members', 'lore', 'llm_cache'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;
