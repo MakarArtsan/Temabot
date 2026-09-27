@@ -17,13 +17,22 @@ log = logging.getLogger(__name__)
 _model: Any = None
 _client: Any = None
 _lock = asyncio.Lock()
+_unavailable = ""   # эмбеддингов нет в этой сборке — не пытаться на каждой теме
+
+
+class EmbeddingsUnavailable(RuntimeError):
+    """Эмбеддинги не настроены — это режим работы, а не сбой.
+
+    Без них новизна считается нейтральной, а поиск идёт по тексту; трейсбек на
+    каждую тему дня только прятал бы в логе настоящие ошибки.
+    """
 
 
 def load_local_model() -> Any:
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:  # pragma: no cover — зависит от окружения
-        raise RuntimeError(
+        raise EmbeddingsUnavailable(
             "Не установлен sentence-transformers. Поставь `pip install -e '.[embed]'` "
             "или переключись на EMBED_BACKEND=api"
         ) from exc
@@ -38,11 +47,19 @@ def _embed_local_sync(model: Any, texts: list[str]) -> list[list[float]]:
 
 
 async def _embed_local(texts: list[str]) -> list[list[float]]:
-    global _model
+    global _model, _unavailable
+    if _unavailable:
+        raise EmbeddingsUnavailable(_unavailable)
     if _model is None:
         async with _lock:
             if _model is None:
-                _model = await asyncio.to_thread(load_local_model)
+                try:
+                    _model = await asyncio.to_thread(load_local_model)
+                except EmbeddingsUnavailable as exc:
+                    _unavailable = str(exc)
+                    log.warning("Эмбеддинги выключены: %s. Новизна тем — нейтральная, "
+                                "поиск — по тексту.", exc)
+                    raise
     # модель синхронная и CPU-bound, в корутине она остановила бы весь процесс
     return await asyncio.to_thread(_embed_local_sync, _model, texts)
 

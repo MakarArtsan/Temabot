@@ -10,7 +10,7 @@ import logging
 import math
 from typing import Any
 
-from src.nlp.embed import embed_one
+from src.nlp.embed import EmbeddingsUnavailable, embed_one
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +56,8 @@ async def find_similar(
         return None, 0.0
     try:
         embedding = await embed_one(title)
+    except EmbeddingsUnavailable:
+        return None, 0.0     # не настроены — об этом уже сказано один раз
     except Exception:
         log.warning("Похожие темы не найдены: эмбеддинги недоступны", exc_info=True)
         return None, 0.0
@@ -86,6 +88,8 @@ async def score_novelty(
 
     try:
         embedding = await embed_one(text)
+    except EmbeddingsUnavailable:
+        return 0.8, None, 0.0
     except Exception:
         log.warning("Новизна не посчитана: эмбеддинги недоступны", exc_info=True)
         return 0.8, None, 0.0

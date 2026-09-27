@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from src.db import repo
 from src.db.models import Chat
 from src.nlp.chunk import Chunk, chunk_thread
-from src.nlp.embed import embed_texts, to_pgvector
+from src.nlp.embed import EmbeddingsUnavailable, embed_texts, to_pgvector
 from src.nlp.threads import segment
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ async def _embed_or_none(texts: list[str], thread_id: int) -> list[str | None] |
     """Векторы строкой для pgvector или None, если эмбеддинги недоступны."""
     try:
         vectors = await embed_texts(texts)
+    except EmbeddingsUnavailable:
+        return None      # не настроены — сказано один раз при первой попытке
     except Exception as exc:
         log.warning(
             "Эмбеддинги недоступны (%s): тред %s индексируется без векторов, "

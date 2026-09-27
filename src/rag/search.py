@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.db import repo
-from src.nlp.embed import embed_one, to_pgvector
+from src.nlp.embed import EmbeddingsUnavailable, embed_one, to_pgvector
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +83,8 @@ async def hybrid_search(
         ranked["vector"] = await repo.search_chunks_by_vector(
             vector, chat_id=chat_id, limit=vector_top
         )
+    except EmbeddingsUnavailable:
+        pass    # эмбеддинги не настроены — поиск полнотекстовый
     except Exception:
         # без эмбеддингов поиск деградирует до полнотекстового, но не отказывает
         log.warning("Векторный поиск недоступен, остаётся полнотекстовый", exc_info=True)

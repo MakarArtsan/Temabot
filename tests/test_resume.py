@@ -251,3 +251,33 @@ def test_page_waits_while_the_job_is_being_resumed(
 
     lost = client.get("/jobs/preview-1-2026-09-25?view=<script>")
     assert "не найдена" in lost.text and "<script>" not in lost.text
+
+
+# ======================================================= эмбеддинги не настроены
+
+async def test_missing_embeddings_are_reported_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """Без sentence-transformers — одна строка в логе, а не трейсбек на каждую тему."""
+    from src.nlp import embed
+    from src.scoring import novelty
+
+    loads = []
+
+    def missing() -> None:
+        loads.append(1)
+        raise embed.EmbeddingsUnavailable("Не установлен sentence-transformers")
+
+    monkeypatch.setattr(embed.cfg, "EMBED_BACKEND", "local")
+    monkeypatch.setattr(embed, "_model", None)
+    monkeypatch.setattr(embed, "_unavailable", "")
+    monkeypatch.setattr(embed, "load_local_model", missing)
+
+    with caplog.at_level("WARNING"):
+        for n in range(5):
+            assert await novelty.score_novelty(f"тема {n}", "вывод", [[1.0]]) == (0.8, None, 0.0)
+            assert await novelty.find_similar(f"тема {n}", [{"embedding": [1.0]}]) == (None, 0.0)
+
+    assert loads == [1]
+    assert len(caplog.records) == 1 and "Эмбеддинги выключены" in caplog.records[0].message
+    assert not any(r.exc_info for r in caplog.records)
