@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.digest.render import OFFTOPIC_KINDS
 from src.scoring.llm_rubric import Rubric
 
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -36,6 +37,8 @@ DEFAULT_PENALTIES: dict[str, float] = {
 DEFAULT_THRESHOLD = 0.45
 REPEAT_SIMILARITY = 0.85   # тот же порог, что и в novelty.py (TZ §4.7)
 DEFAULT_TOP_N = 6
+# Личные новости и живой оффтоп идут отдельным разделом и не вытесняют рабочие темы
+DEFAULT_TOP_N_OFFTOPIC = 3
 
 
 @dataclass(slots=True)
@@ -92,6 +95,11 @@ def compute(
     threshold = threshold_from(settings)
 
     usefulness = rubric.usefulness / 10.0
+    interest = rubric.interest / 10.0
+    if rubric.kind in OFFTOPIC_KINDS:
+        # личную новость или историю нельзя «применить», но людям она важна:
+        # для них польза — это интерес чата
+        usefulness = max(usefulness, interest)
     specificity = rubric.specificity / 10.0
     relevance = rubric.relevance / 10.0
     owner_signal = normalized.get("owner_signal", 0.0)
@@ -117,6 +125,7 @@ def compute(
     features = {
         "engagement": engagement,
         "usefulness": usefulness,
+        "interest": interest,
         "specificity": specificity,
         "relevance": relevance,
         "novelty": novelty,
@@ -135,19 +144,34 @@ def compute(
 def select(
     scored: list[tuple[Any, Scored]], *, settings: dict[str, Any] | None = None
 ) -> tuple[list[Any], list[Any]]:
-    """Отобрать темы выше порога, но не больше top_n (TZ §4.7).
+    """Отобрать темы выше порога: рабочих не больше top_n, оффтопа — top_n_offtopic.
 
     Возвращает (показать, отсеять). Отсеянные не выбрасываются — они нужны для
     команды `/missed` и для обучения на пропущенном.
     """
-    limit = int((settings or {}).get("top_n", DEFAULT_TOP_N))
+    limit = _int_setting(settings, "top_n", DEFAULT_TOP_N)
+    offtopic_limit = _int_setting(settings, "top_n_offtopic", DEFAULT_TOP_N_OFFTOPIC)
     ordered = sorted(scored, key=lambda pair: pair[1].score, reverse=True)
 
     shown: list[Any] = []
     missed: list[Any] = []
+    work = offtopic = 0
     for item, result in ordered:
-        if result.passed and len(shown) < limit:
+        is_offtopic = result.features.get("kind") in OFFTOPIC_KINDS
+        room = offtopic < offtopic_limit if is_offtopic else work < limit
+        if result.passed and room:
             shown.append(item)
+            if is_offtopic:
+                offtopic += 1
+            else:
+                work += 1
         else:
             missed.append(item)
     return shown, missed
+
+
+def _int_setting(settings: dict[str, Any] | None, key: str, default: int) -> int:
+    try:
+        return int((settings or {}).get(key, default))
+    except (TypeError, ValueError):
+        return default

@@ -55,20 +55,26 @@
   </section>
   {% endif %}
 
-  {% if data.topics %}
+  {% set work = data.topics|rejectattr('is_offtopic')|list %}
+  {% set offtopic = data.topics|selectattr('is_offtopic')|list %}
+  {% for heading, topics in [('Темы дня', work), ('Не по делу, но интересно', offtopic)] %}
+  {% if topics %}
   <section class="card">
-    <div class="card-head"><h2>Темы дня</h2><span class="muted small">{{ data.topics|length }}</span></div>
-    {% for t in data.topics %}
+    <div class="card-head"><h2>{{ heading }}</h2><span class="muted small">{{ topics|length }}</span></div>
+    {% for t in topics %}
       <article class="topic">
         <div class="head">
           <h3>{{ t.title }}</h3>
           {{ badge(kind_label(t.kind)) }}
         </div>
-        {% set verdict = t.takeaway or t.decision %}
-        {% if verdict %}<p class="takeaway">{{ verdict }}</p>{% endif %}
-        {% if t.why %}<p class="why">Почему важно: {{ t.why }}</p>{% endif %}
-        {% if t.debate %}<p class="extra">Спорили: {{ t.debate }}</p>{% endif %}
-        {% if t.mentions %}<p class="extra">Упоминали: {{ t.mentions[:6]|join(', ') }}</p>{% endif %}
+        {% set text = t.summary or t.takeaway or t.decision %}
+        {% if text %}<p class="takeaway">{{ text }}</p>{% endif %}
+        {% if t.sides %}
+          <p class="extra">Спорили: {% for side in t.sides %}<b>{{ side.who }}</b> — {{ side.stance }}{{ '; ' if not loop.last }}{% endfor %}</p>
+        {% elif t.debate %}<p class="extra">Спорили: {{ t.debate }}</p>{% endif %}
+        {% if t.decision and t.decision not in text %}<p class="extra">Итог: {{ t.decision }}</p>{% endif %}
+        {% if t.why %}<p class="why">Зачем знать: {{ t.why }}</p>{% endif %}
+        {% if t.mentions and not t.is_offtopic %}<p class="extra">Упоминали: {{ t.mentions[:6]|join(', ') }}</p>{% endif %}
         <div class="meta">
           {% set people = t.participants|length or t.contributors|length %}
           {% if people %}<span title="участников">{{ icon('groups', 'sm') }}{{ people }}</span>{% endif %}
@@ -80,6 +86,7 @@
     {% endfor %}
   </section>
   {% endif %}
+  {% endfor %}
 
   {% if data.unanswered or data.links %}
   <div class="grid two">

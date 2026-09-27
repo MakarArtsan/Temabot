@@ -272,7 +272,7 @@ def test_render_full_digest():
     text = render(data)
 
     assert "📌 *Главное за день*" in text
-    assert "Вывод: референсы больше 2K ужимать заранее" in text
+    assert "референсы больше 2K ужимать заранее" in text, "старый дайджест без пересказа — итог"
     assert "https://t.me/c/2354231333/2" in text, "ссылка ведёт на ключевое сообщение"
     assert "❓ *Без ответа*" in text
     assert "🔗 *Ссылки дня*" in text

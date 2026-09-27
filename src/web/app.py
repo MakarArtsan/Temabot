@@ -426,6 +426,7 @@ async def selection_page(
         DEFAULT_PENALTIES,
         DEFAULT_THRESHOLD,
         DEFAULT_TOP_N,
+        DEFAULT_TOP_N_OFFTOPIC,
         DEFAULT_WEIGHTS,
     )
 
@@ -451,6 +452,7 @@ async def selection_page(
             "threshold": settings.get("threshold", DEFAULT_THRESHOLD),
             "default_threshold": DEFAULT_THRESHOLD,
             "top_n": settings.get("top_n", DEFAULT_TOP_N),
+            "top_n_offtopic": settings.get("top_n_offtopic", DEFAULT_TOP_N_OFFTOPIC),
             "yesterday": local_today() - timedelta(days=1),
         },
     )
@@ -475,6 +477,8 @@ async def selection_save(
                 penalties[key.removeprefix("penalty_")] = round(float(str(raw)), 3)
         patch["threshold"] = round(float(str(form.get("threshold", 0.45))), 3)
         patch["top_n"] = int(float(str(form.get("top_n", 6))))
+        if "top_n_offtopic" in form:
+            patch["top_n_offtopic"] = int(float(str(form.get("top_n_offtopic"))))
     except ValueError:
         raise HTTPException(400, "Недопустимое число в настройках") from None
     patch["weights"] = weights
@@ -765,6 +769,67 @@ async def ratings_recalc(
     else:
         await recalc_all()
     return RedirectResponse("/ratings", status_code=303)
+
+
+# ------------------------------------------------------------------ лор чата
+
+@app.get("/lore", response_class=HTMLResponse)
+async def lore_page(
+    request: Request, chat: int | None = None, _: dict = Depends(auth.require_owner)
+) -> HTMLResponse:
+    """Лор чата: мемы, персонажи, истории и роли — только владельцу."""
+    from src.digest import lore as lore_mod
+
+    chats = await repo.list_chats()
+    current = next((c for c in chats if c.id == chat), chats[0] if chats else None)
+    rows = await repo.list_lore(current.id, include_hidden=True) if current else []
+    groups = [
+        (kind, lore_mod.KIND_MARKS[kind], title, [r for r in rows if r["kind"] == kind])
+        for kind, title in (
+            ("meme", "Мемы и словечки"), ("legend", "Легендарные персонажи"),
+            ("story", "Истории"), ("role", "Роли участников"),
+        )
+    ]
+    return render(
+        request,
+        "lore.html",
+        {
+            "active": "lore",
+            "chats": chats,
+            "chat": current,
+            "groups": groups,
+            "total": len(rows),
+            "enabled": lore_mod.enabled(current) if current else False,
+        },
+    )
+
+
+@app.post("/lore/{lore_id}", response_class=HTMLResponse)
+async def lore_update(
+    request: Request, lore_id: int, action: str = Form(...), csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Скрыть, вернуть или удалить запись лора."""
+    auth.check_csrf(request, csrf_token)
+    if action == "delete":
+        await repo.delete_lore(lore_id)
+        return HTMLResponse("")
+    if action not in {"hide", "show"}:
+        raise HTTPException(400, "Неизвестное действие")
+    row = await repo.set_lore_hidden(lore_id, action == "hide")
+    if row is None:
+        raise HTTPException(404, "Запись не найдена")
+    return render(request, "_lore_item.html", {"item": row})
+
+
+@app.post("/lore/settings/{chat_id}")
+async def lore_settings(
+    request: Request, chat_id: int, enabled: str = Form("0"), csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> Response:
+    auth.check_csrf(request, csrf_token)
+    await repo.update_chat_settings(chat_id, {"lore": {"enabled": enabled == "1"}})
+    return RedirectResponse(f"/lore?chat={chat_id}", status_code=303)
 
 
 # --------------------------------------------------------------------- Q&A

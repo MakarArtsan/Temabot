@@ -86,6 +86,8 @@ class DigestResult:
     mapped: int = 0            # тредов разобрано моделью
     failed: int = 0            # тредов, на которых модель не ответила
     digest_id: int | None = None
+    lore: list[str] = field(default_factory=list)   # что нового в лоре чата за день
+    people: dict[int, str] = field(default_factory=dict)   # tg_user_id → имя за день
 
     @property
     def html(self) -> str:
@@ -101,9 +103,13 @@ class DigestResult:
 # ------------------------------------------------------------------- map
 
 async def map_thread(
-    thread: Thread, chat: Chat, *, llm: LLMCall = chat_json
+    thread: Thread, chat: Chat, *, llm: LLMCall = chat_json, lore: str = ""
 ) -> tuple[Topic | None, Usage]:
-    """Один тред -> одна тема. Ошибка модели не роняет весь дайджест."""
+    """Один тред -> одна тема. Ошибка модели не роняет весь дайджест.
+
+    `lore` — местные мемы и персонажи строками: без них модель не понимает
+    отсылок и пересказывает шутки чата как бессмыслицу.
+    """
     participants = ", ".join(
         f"{m.tg_user_id} — {m.author_name or '?'}"
         for m in {m.tg_user_id: m for m in thread.messages if m.tg_user_id}.values()
@@ -112,6 +118,8 @@ async def map_thread(
     profile = (chat.settings or {}).get("interests_profile")
     if profile:
         system += prompts.INTERESTS_HINT.format(profile=profile)
+    if lore:
+        system += prompts.LORE_HINT.format(lore=lore)
 
     try:
         data, usage = await llm(
@@ -139,6 +147,9 @@ async def map_thread(
     topic = Topic(
         thread_id=thread.root_msg_id,
         title=str(data.get("title", "")).strip(),
+        summary=str(data.get("summary") or "").strip(),
+        short=str(data.get("short") or "").strip(),
+        sides=_as_sides(data.get("sides")),
         decision=str(data.get("decision") or "").strip(),
         debate=str(data.get("debate") or "").strip(),
         open_questions=_as_str_list(data.get("open_questions")),
@@ -158,6 +169,21 @@ def _as_str_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _as_sides(value: Any) -> list[dict]:
+    """Кто что отстаивал: только пары «имя — позиция», без пустых."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:6]:
+        if not isinstance(item, dict):
+            continue
+        who = str(item.get("who") or "").strip()
+        stance = str(item.get("stance") or "").strip()
+        if who and stance:
+            result.append({"who": who[:60], "stance": stance[:200]})
+    return result
 
 
 def _as_int_list(value: Any, *, allowed: set[int] | None = None) -> list[int]:
@@ -271,7 +297,8 @@ async def make_highlights(
     if not topics:
         return [], Usage()
     listing = "\n".join(
-        f"- {t.title}" + (f" — {t.decision}" if t.decision else "") for t in topics
+        f"- {t.title}" + (f" — {t.summary or t.gist}" if (t.summary or t.gist) else "")
+        for t in topics
     )
     try:
         data, usage = await llm(
@@ -322,6 +349,7 @@ async def build_digest(
     history = await repo.signal_history(chat.id, before=day)
     recent_items = await repo.recent_topics(chat.id, before=day)
     examples = await repo.feedback_examples(chat.id)
+    lore = await lore_context(chat)
 
     live = [t for t in threads if not t.low_value]
     peers = [
@@ -338,7 +366,7 @@ async def build_digest(
 
     for thread, signals in zip(live, peers, strict=True):
         try:
-            topic, usage = await map_thread(thread, chat, llm=llm)
+            topic, usage = await map_thread(thread, chat, llm=llm, lore=lore)
         except Exception:
             # один упавший тред не отменяет остальные, но мы это запомним
             failed += 1
@@ -398,6 +426,7 @@ async def build_digest(
         all_topics=[t for t, _ in pairs],
         mapped=mapped,
         failed=failed,
+        people={m.tg_user_id: m.author_name for m in messages if m.tg_user_id and m.author_name},
     )
 
 
@@ -442,7 +471,32 @@ async def run_for_chat(
             ],
         )
         await _add_heroes(chat, day, result)
+        result.lore = await _update_lore(chat, day, result, llm=llm)
     return result
+
+
+async def lore_context(chat: Chat) -> str:
+    """Лор строками для промпта разбора. Сбой базы не мешает дайджесту."""
+    from src.digest.lore import context_lines
+
+    try:
+        return await context_lines(chat)
+    except Exception:
+        log.warning("Лор чата не прочитался", exc_info=True)
+        return ""
+
+
+async def _update_lore(
+    chat: Chat, day: date_type, result: DigestResult, *, llm: LLMCall
+) -> list[str]:
+    """Пополнить лор чата по итогам дня (решение владельца, см. PROGRESS)."""
+    from src.digest.lore import update_lore
+
+    try:
+        return await update_lore(chat, day, result.all_topics, people=result.people, llm=llm)
+    except Exception:
+        log.warning("Лор чата не обновился", exc_info=True)
+        return []
 
 
 async def _add_heroes(chat: Chat, day: date_type, result: DigestResult) -> None:

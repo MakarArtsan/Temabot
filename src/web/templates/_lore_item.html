@@ -1,0 +1,23 @@
+{% from "_ui.html" import icon, badge %}
+{% macro act(action, label, cls="ghost") -%}
+<button class="btn sm {{ cls }}" hx-post="/lore/{{ item.id }}" hx-target="#lore-{{ item.id }}" hx-swap="outerHTML"
+        {% if action == 'delete' %}hx-confirm="Удалить «{{ item.title }}» из лора насовсем?"{% endif %}
+        hx-vals='{"action":"{{ action }}","csrf_token":"{{ csrf }}"}'>{{ label }}</button>
+{%- endmacro %}
+<article class="topic {{ 'missed' if item.hidden }}" id="lore-{{ item.id }}">
+  <div class="head">
+    <h3>{{ item.title }}</h3>
+    {% if item.hidden %}{{ badge('скрыто') }}{% elif item.mentions > 1 %}{{ badge('всплывало ' ~ item.mentions ~ ' ' ~ plural(item.mentions, 'день', 'дня', 'дней'), 'ok') }}{% endif %}
+  </div>
+  {% if item.body %}<p class="takeaway">{{ item.body }}</p>{% endif %}
+  <div class="meta">
+    {% if item.first_day %}<span>{{ icon('calendar', 'sm') }}с {{ item.first_day.strftime('%d.%m.%Y') }}{% if item.last_day and item.last_day != item.first_day %}, последний раз {{ item.last_day.strftime('%d.%m') }}{% endif %}</span>{% endif %}
+    {% for src in (item.sources or [])[:3] %}
+      {% if chat_tg_id and src.msg_id %}<a href="{{ deeplink(chat_tg_id, src.msg_id) }}" target="_blank" rel="noopener noreferrer">откуда {{ icon('external', 'sm') }}</a>{% endif %}
+    {% endfor %}
+  </div>
+  <div class="fb">
+    {% if item.hidden %}{{ act('show', 'Вернуть') }}{% else %}{{ act('hide', 'Скрыть') }}{% endif %}
+    {{ act('delete', 'Удалить', 'danger') }}
+  </div>
+</article>

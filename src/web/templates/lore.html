@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Лор чата{% endblock %}
+{% block h1 %}Лор чата{% endblock %}
+{% block lead %}<p class="lead">Местные мемы, легендарные персонажи, истории и роли людей. Бот пополняет лор каждый вечер по итогам дня — вы можете скрыть или удалить любую запись. Видите его только вы.</p>{% endblock %}
+{% block content %}
+{% if not chat %}
+  <div class="card">{{ empty('Групп пока нет', '', 'groups') }}</div>
+{% else %}
+<div class="card">
+  <div class="rows">
+    {% if chats|length > 1 %}
+    <form method="get" action="/lore" class="row">
+      <label class="text title" for="lore-chat">Группа</label>
+      <div class="control"><select id="lore-chat" name="chat" onchange="this.form.submit()">
+        {% for c in chats %}<option value="{{ c.id }}" {{ 'selected' if c.id == chat.id }}>{{ chat_name(c) }}</option>{% endfor %}
+      </select></div>
+    </form>
+    {% endif %}
+    <form method="post" action="/lore/settings/{{ chat.id }}" class="row">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="enabled" value="{{ 0 if enabled else 1 }}">
+      <div class="text">
+        <div class="title">Вести лор {{ chat_name(chat) }}</div>
+        <div class="hint">Один вызов модели в день. Мемы, персонажи и истории помогают модели понимать местные шутки в дайджесте. Роли заводятся только тем, кто не скрылся из рейтингов (/optout).</div>
+      </div>
+      <div class="control"><button class="switch" role="switch" type="submit" aria-label="Вести лор" aria-checked="{{ 'true' if enabled else 'false' }}"></button></div>
+    </form>
+  </div>
+</div>
+
+{% if not total %}
+  <div class="card">{{ empty('Лор пока пуст', 'Он начнёт пополняться с ближайшего вечернего дайджеста.', 'book') }}</div>
+{% else %}
+  {% set chat_tg_id = chat.tg_id %}
+  {% for kind, mark, title, items in groups %}
+    {% if items %}
+    <section class="card">
+      <div class="card-head"><h2>{{ mark }} {{ title }}</h2><span class="muted small">{{ items|length }}</span></div>
+      {% for item in items %}{% include "_lore_item.html" %}{% endfor %}
+    </section>
+    {% endif %}
+  {% endfor %}
+{% endif %}
+{% endif %}
+{% endblock %}

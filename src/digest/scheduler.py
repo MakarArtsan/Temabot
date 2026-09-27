@@ -17,7 +17,7 @@ from apscheduler.triggers.cron import CronTrigger
 from src.config import cfg
 from src.db import repo
 from src.digest import pipeline as digest_pipeline
-from src.digest.render import DigestData, digest_parts, split_message
+from src.digest.render import DigestData, digest_messages, split_message, topic_card
 from src.jobs.ratings import recalc_all
 from src.jobs.retrain import retrain_all
 from src.rag.index import index_all
@@ -49,6 +49,7 @@ async def send_daily_digests(bot: Any, *, day: date_type | None = None) -> int:
         try:
             await send_digest(bot, cfg.OWNER_ID, result.data, topics=result.topics)
             sent += 1
+            await send_lore_news(bot, chat, result.lore)
         except Exception:
             log.exception("Не удалось отправить дайджест группы %s", chat.tg_id)
 
@@ -87,35 +88,56 @@ async def publish_to_group(bot: Any, chat: Any, digest_id: int | None) -> None:
 async def send_digest(
     bot: Any, chat_id: int, data: DigestData | None, *, topics: list[Any] | None = None
 ) -> int:
-    """Отправить дайджест: шапка, темы с кнопками оценки, хвост (TZ §4.7).
+    """Отправить дайджест владельцу (TZ §4.7).
 
-    Возвращает число отправленных сообщений.
+    Сначала весь дайджест одним сообщением — так же, как его увидит группа: у
+    каждой темы заголовок, подробности свёрнуты. Длинный делится на несколько
+    сообщений по границам тем. Потом — короткие карточки тем с кнопками оценки,
+    без звука: кнопки в Telegram принадлежат сообщению, поэтому у каждой темы
+    своя карточка. Возвращает число отправленных сообщений.
     """
     from src.bot.handlers_feedback import feedback_keyboard
 
     if data is None:
         return 0
 
-    by_thread = {t.thread_id: t for t in (topics or [])}
     sent = 0
-    for text, topic in digest_parts(data):
-        markup = None
-        if topic is not None:
-            # id темы известен только после сохранения в БД
-            stored = by_thread.get(topic.thread_id)
-            item_id = getattr(stored, "item_id", None) or getattr(topic, "item_id", None)
-            if item_id:
-                markup = feedback_keyboard(item_id)
-        chunks = split_message(text)
-        for index, chunk in enumerate(chunks):
-            # кнопки вешаем на последний кусок: под ним они и видны
-            await bot.send_message(
-                chat_id, chunk, parse_mode="HTML",
-                link_preview_options={"is_disabled": True},
-                reply_markup=markup if index == len(chunks) - 1 else None,
-            )
-            sent += 1
+    for part in digest_messages(data):
+        await bot.send_message(
+            chat_id, part, parse_mode="HTML", link_preview_options={"is_disabled": True}
+        )
+        sent += 1
+
+    by_thread = {t.thread_id: t for t in (topics or [])}
+    for topic in data.topics:
+        # id темы известен только после сохранения в БД
+        stored = by_thread.get(topic.thread_id)
+        item_id = getattr(stored, "item_id", None) or getattr(topic, "item_id", None)
+        if not item_id:
+            continue
+        await bot.send_message(
+            chat_id,
+            topic_card(topic, data.chat_tg_id),
+            parse_mode="HTML",
+            link_preview_options={"is_disabled": True},
+            reply_markup=feedback_keyboard(item_id),
+            disable_notification=True,   # звенит один раз — на самом дайджесте
+        )
+        sent += 1
     return sent
+
+
+async def send_lore_news(bot: Any, chat: Any, added: list[str]) -> None:
+    """Что нового в лоре чата — владельцу, одной строкой после дайджеста."""
+    if not added:
+        return
+    from src.digest.render import esc_html
+
+    title = esc_html(chat.title or str(chat.tg_id))
+    lines = [f"📜 <b>Лор «{title}» пополнился</b>", *(f"• {esc_html(a)}" for a in added)]
+    await bot.send_message(
+        cfg.OWNER_ID, "\n".join(lines), parse_mode="HTML", disable_notification=True
+    )
 
 
 async def send_period_report(bot: Any, period_key: str) -> int:

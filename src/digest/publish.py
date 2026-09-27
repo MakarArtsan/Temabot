@@ -19,7 +19,7 @@ from typing import Any
 
 from src.db import repo
 from src.db.models import Chat
-from src.digest.render import DigestData, deeplink, render_html, split_message
+from src.digest.render import DigestData, deeplink, digest_messages
 
 log = logging.getLogger(__name__)
 
@@ -52,10 +52,11 @@ def ratings_are_public(chat: Chat) -> bool:
 
 
 def group_parts(data: DigestData, *, ratings_public: bool) -> list[str]:
-    """Текст для группы: тот же дайджест сплошным текстом, без кнопок оценки."""
+    """Текст для группы: тот же дайджест одним сообщением (длинный — несколькими),
+    темы свёрнуты под раскрывающиеся цитаты, кнопок оценки нет."""
     if data.heroes and not ratings_public:
         data = dataclasses.replace(data, heroes="")
-    return split_message(render_html(data))
+    return digest_messages(data)
 
 
 def group_preview(digest_payload: dict[str, Any], chat: Chat) -> list[str]:

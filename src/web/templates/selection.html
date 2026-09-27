@@ -78,11 +78,20 @@
             Сейчас по умолчанию {{ '%.2f'|format(default_threshold) }}.</span>
         </div>
         <div class="slider">
-          <label class="name" for="top_n">Не больше тем за день</label>
+          <label class="name" for="top_n">Не больше рабочих тем за день</label>
           <output id="out-top_n">{{ top_n }}</output>
           <input id="top_n" type="range" name="top_n" min="1" max="20" step="1"
                  value="{{ top_n }}" oninput="document.getElementById('out-top_n').textContent=this.value">
           <span class="field-hint">Даже если порог прошло больше — в дайджест попадут самые сильные.</span>
+        </div>
+        <div class="slider">
+          <label class="name" for="top_n_offtopic">«Не по делу, но интересно» — не больше</label>
+          <output id="out-top_n_offtopic">{{ top_n_offtopic }}</output>
+          <input id="top_n_offtopic" type="range" name="top_n_offtopic" min="0" max="10" step="1"
+                 value="{{ top_n_offtopic }}" oninput="document.getElementById('out-top_n_offtopic').textContent=this.value">
+          <span class="field-hint">Личные новости участников и истории, которые живо обсуждали, —
+            отдельным разделом в конце дайджеста. Пустой флуд и шутки, которые никто не подхватил,
+            туда не попадают. 0 — раздел выключен.</span>
         </div>
       </section>
     </div>

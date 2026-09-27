@@ -467,6 +467,10 @@ details.more[open] > summary { margin-bottom: 10px; }
   border: 1px solid var(--line); border-radius: 14px; border-top-left-radius: 4px;
   padding: 12px 14px; margin: 0 0 10px; font-size: 14.5px;
 }
+.tg-post blockquote {
+  margin: 4px 0 2px; padding: 6px 10px; border-left: 3px solid var(--accent);
+  background: var(--card); border-radius: 6px; white-space: pre-wrap;
+}
 .plain-list { margin: 0; padding-left: 18px; }
 .plain-list li { margin: 4px 0; overflow-wrap: anywhere; }
 

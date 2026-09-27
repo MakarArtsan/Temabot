@@ -8,6 +8,7 @@
   ('groups', '/groups', 'groups', 'Группы'),
 ] %}
 {% set nav_more = [
+  ('lore', '/lore', 'book', 'Лор чата'),
   ('selection', '/selection', 'sliders', 'Отбор тем'),
   ('learning', '/learning', 'spark', 'Обучение'),
   ('authors', '/authors', 'user', 'Участники'),
@@ -23,7 +24,7 @@
     {% for key, href, ic, label in nav_main %}
       <a class="nav {{ 'on' if page == key }}" href="{{ href }}" {% if page == key %}aria-current="page"{% endif %}>{{ icon(ic) }}{{ label }}</a>
     {% endfor %}
-    <div class="nav-group">Настройка</div>
+    <div class="nav-group">Ещё</div>
     {% for key, href, ic, label in nav_more %}
       <a class="nav {{ 'on' if page == key }}" href="{{ href }}" {% if page == key %}aria-current="page"{% endif %}>{{ icon(ic) }}{{ label }}</a>
     {% endfor %}

@@ -67,6 +67,8 @@ KINDS: dict[str, str] = {
     "resource": "Полезная ссылка",
     "announcement": "Анонс",
     "question": "Вопрос",
+    "life": "Новости людей",
+    "fun": "Оффтоп",
     "drama": "Спор",
     "other": "Обсуждение",
 }

@@ -1515,3 +1515,101 @@ async def log_llm_usage(
         tokens_out,
         cost_usd,
     )
+
+
+# ------------------------------------------------------------------ лор чата
+
+LORE_KINDS = ("meme", "legend", "story", "role")
+
+
+async def list_lore(chat_id: int, *, include_hidden: bool = False) -> list[dict[str, Any]]:
+    """Лор чата: сначала то, что всплывает чаще и позже."""
+    rows = await pool.fetch(
+        """
+        select l.*, a.name as person
+          from lore l
+          left join authors a on a.tg_user_id = l.tg_user_id
+         where l.chat_id = $1 and ($2 or not l.hidden)
+         order by l.mentions desc, l.last_day desc nulls last, l.id
+        """,
+        chat_id,
+        include_hidden,
+    )
+    return [dict(r) for r in rows]
+
+
+async def add_lore(
+    chat_id: int,
+    *,
+    kind: str,
+    title: str,
+    body: str,
+    day: date_type,
+    tg_user_id: int | None = None,
+    sources: list[dict[str, Any]] | None = None,
+) -> int | None:
+    """Новая запись лора. Если такая уже есть — отмечаем, что она снова всплыла.
+
+    Возвращает id новой записи или None, если запись уже была.
+    """
+    row = await pool.fetchrow(
+        """
+        insert into lore (chat_id, kind, title, body, tg_user_id, first_day, last_day, sources)
+        values ($1, $2, $3, $4, $5, $6, $6, $7::jsonb)
+        on conflict (chat_id, kind, lower(title)) do update set
+            last_day = greatest(lore.last_day, excluded.last_day),
+            mentions = lore.mentions
+                     + case when lore.last_day < excluded.last_day then 1 else 0 end,
+            updated_at = now()
+        returning id, (xmax = 0) as inserted
+        """,
+        chat_id,
+        kind,
+        title,
+        body,
+        tg_user_id,
+        day,
+        sources or [],
+    )
+    return int(row["id"]) if row and row["inserted"] else None
+
+
+async def touch_lore(
+    lore_id: int, chat_id: int, *, day: date_type, body: str = ""
+) -> bool:
+    """Запись снова всплыла; новое описание — если модель его дала."""
+    result = await pool.execute(
+        """
+        update lore set
+            body = case when $4 <> '' then $4 else body end,
+            mentions = mentions + case when last_day is null or last_day < $3 then 1 else 0 end,
+            last_day = greatest(coalesce(last_day, $3), $3),
+            updated_at = now()
+         where id = $1 and chat_id = $2
+        """,
+        lore_id,
+        chat_id,
+        day,
+        body,
+    )
+    return result.endswith("1")
+
+
+async def set_lore_hidden(lore_id: int, hidden: bool) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        "update lore set hidden = $2, updated_at = now() where id = $1 returning *",
+        lore_id,
+        hidden,
+    )
+    return dict(row) if row else None
+
+
+async def delete_lore(lore_id: int) -> bool:
+    result = await pool.execute("delete from lore where id = $1", lore_id)
+    return result.endswith("1")
+
+
+async def opted_out_ids() -> set[int]:
+    """Кто скрылся из рейтингов (/optout или вручную) — им не заводят роль в лоре."""
+    rows = await pool.fetch("select tg_user_id from authors where hide_from_ratings")
+    return {int(r["tg_user_id"]) for r in rows}

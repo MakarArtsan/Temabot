@@ -18,7 +18,10 @@ from src.nlp.threads import Thread
 
 log = logging.getLogger(__name__)
 
-KINDS = {"decision", "insight", "resource", "announcement", "question", "drama", "other"}
+KINDS = {
+    "decision", "insight", "resource", "announcement", "question",
+    "life", "fun", "drama", "other",
+}
 MAX_THREAD_CHARS = 12_000
 MAX_EXAMPLES = 8
 
@@ -29,6 +32,7 @@ LLMCall = Callable[..., Awaitable[tuple[Any, Usage]]]
 class Rubric:
     kind: str = "other"
     usefulness: float = 0.0
+    interest: float = 0.0     # интересно ли людям чата, даже если не по делу
     specificity: float = 0.0
     relevance: float = 0.0
     takeaway: str = ""
@@ -118,6 +122,7 @@ async def rate_thread(
         Rubric(
             kind=kind if kind in KINDS else "other",
             usefulness=_clamp(data.get("usefulness")),
+            interest=_clamp(data.get("interest")),
             specificity=_clamp(data.get("specificity")),
             relevance=_clamp(data.get("relevance")),
             takeaway=str(data.get("takeaway") or "").strip(),

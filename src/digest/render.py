@@ -2,9 +2,14 @@
 
 Два формата из одних данных:
   * Markdown — для хранения и веб-админки;
-  * Telegram HTML — для отправки в личку. HTML выбран потому, что в нём
-    экранируется ровно три символа, а Markdown Telegram ломается на любой
-    звёздочке или подчёркивании внутри текста, пришедшего от модели.
+  * Telegram HTML — для отправки. HTML выбран потому, что в нём экранируется
+    ровно три символа, а Markdown Telegram ломается на любой звёздочке или
+    подчёркивании внутри текста, пришедшего от модели.
+
+В Telegram дайджест — одно сообщение: у каждой темы виден заголовок, а
+подробности свёрнуты в раскрывающуюся цитату (`<blockquote expandable>`).
+Если текст не влезает в лимит Telegram, он делится на несколько сообщений —
+только по границам тем, чтобы не разорвать разметку.
 
 Структура дайджеста целиком складывается в `digests.topics`, чтобы команда
 `/digest <дата>` за прошедший день собирала ровно ту же картинку, а не
@@ -76,8 +81,11 @@ class Topic:
 
     thread_id: int
     title: str
+    summary: str = ""            # живой пересказ с именами: кто что предложил и чем кончилось
+    short: str = ""              # суть одной строкой
+    sides: list[dict] = field(default_factory=list)   # [{"who": имя, "stance": позиция}]
     decision: str = ""
-    debate: str = ""
+    debate: str = ""             # старые дайджесты: спор одной строкой вместо sides
     open_questions: list[str] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
     mentions: list[str] = field(default_factory=list)
@@ -100,6 +108,16 @@ class Topic:
     def anchor_msg_id(self) -> int:
         """Куда ведёт ссылка: на ключевое сообщение, иначе на начало треда."""
         return self.key_msg_ids[0] if self.key_msg_ids else self.thread_id
+
+    @property
+    def is_offtopic(self) -> bool:
+        """Личные новости и живой оффтоп — отдельным разделом дайджеста."""
+        return self.kind in OFFTOPIC_KINDS
+
+    @property
+    def gist(self) -> str:
+        """Суть одной строкой — для списка тем и карточек оценки."""
+        return self.short or self.takeaway or self.decision
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -174,146 +192,236 @@ class DigestData:
         )
 
 
+# ------------------------------------------------------------------ вид темы
+
+OFFTOPIC_KINDS = frozenset({"life", "fun"})
+
+KIND_MARKS = {
+    "decision": "🟢",
+    "insight": "💡",
+    "resource": "🔗",
+    "announcement": "📣",
+    "question": "❓",
+    "drama": "🔥",
+    "life": "🎉",
+    "fun": "😄",
+    "other": "💬",
+}
+
+
+def _sides_line(topic: Topic, plain: Any) -> str:
+    """Кто с кем спорил: «Вася — за Veo; Петя — за Kling»."""
+    parts = []
+    for side in topic.sides:
+        who = str(side.get("who") or "").strip()
+        stance = str(side.get("stance") or "").strip()
+        if who and stance:
+            parts.append(f"{plain(who)} — {plain(stance)}")
+    if parts:
+        return "; ".join(parts)
+    return plain(topic.debate) if topic.debate else ""
+
+
+def _meta_line(topic: Topic, chat_tg_id: int, link: Any) -> str:
+    meta = []
+    people = len(topic.participants) or len(topic.contributors)
+    if people:
+        meta.append(f"👥 {people}")
+    meta.append(f"💬 {topic.msg_count}")
+    if topic.reactions:
+        meta.append(f"❤️ {topic.reactions}")
+    anchor = link("к обсуждению", deeplink(chat_tg_id, topic.anchor_msg_id))
+    return f"{' · '.join(meta)} · {anchor}"
+
+
+def _topic_body(topic: Topic, chat_tg_id: int, *, link: Any, plain: Any) -> list[str]:
+    """Содержимое темы: пересказ, кто спорил, итог, зачем знать, ссылка."""
+    lines: list[str] = []
+    summary = topic.summary or topic.takeaway or topic.decision
+    if summary:
+        lines.append(plain(summary))
+    sides = _sides_line(topic, plain)
+    if sides:
+        lines.append(f"🗣 Спорили: {sides}")
+    # итог отдельной строкой — только если пересказ сам его не содержит
+    if topic.decision and topic.decision not in summary:
+        lines.append(f"✅ Итог: {plain(topic.decision)}")
+    if topic.why:
+        lines.append(f"💡 Зачем знать: {plain(topic.why)}")
+    if topic.mentions and not topic.is_offtopic:
+        lines.append(f"🧩 Упоминали: {plain(', '.join(topic.mentions[:6]))}")
+    lines.append(_meta_line(topic, chat_tg_id, link))
+    return lines
+
+
+def _stats_line(data: DigestData, plain: Any) -> str:
+    parts = [f"📊 {data.msg_count} сообщений", f"{data.participants} участников"]
+    if data.noise_count:
+        parts.append(f"{data.noise_count} коротких реплик не в счёт")
+    return ", ".join(parts)
+
+
+def _sections(data: DigestData) -> tuple[list[Topic], list[Topic]]:
+    work = [t for t in data.topics if not t.is_offtopic]
+    offtopic = [t for t in data.topics if t.is_offtopic]
+    return work, offtopic
+
+
 # --------------------------------------------------------------------- Markdown
 
 def render(data: DigestData) -> str:
     """Markdown для хранения и админки."""
-    return _render(data, bold=lambda t: f"*{esc_md(t)}*", link=_md_link, plain=esc_md)
+    title = data.chat_title or str(data.chat_tg_id)
+    bold = lambda t: f"*{esc_md(t)}*"  # noqa: E731
+    lines: list[str] = [bold(f"Дайджест «{title}» за {data.day:%d.%m.%Y}"), ""]
 
+    if not data.topics and not data.highlights:
+        lines.append("За день ничего заметного не обсуждали.")
+        lines.append(_stats_line(data, esc_md))
+        return "\n".join(lines).strip()
 
-def render_html(data: DigestData) -> str:
-    """Telegram HTML для отправки в личку."""
-    return _render(
-        data, bold=lambda t: f"<b>{esc_html(t)}</b>", link=_html_link, plain=esc_html
-    )
+    if data.highlights:
+        lines.append("📌 " + bold("Главное за день"))
+        lines += [f"• {esc_md(h)}" for h in data.highlights[:3]]
+        lines.append("")
+
+    work, offtopic = _sections(data)
+    for heading, topics in (("", work), ("☕ Не по делу, но интересно", offtopic)):
+        if not topics:
+            continue
+        if heading:
+            lines += [bold(heading), ""]
+        for topic in topics:
+            lines.append(f"{KIND_MARKS.get(topic.kind, '💬')} {bold(topic.title)}")
+            lines += _topic_body(topic, data.chat_tg_id, link=_md_link, plain=esc_md)
+            lines.append("")
+
+    if data.unanswered:
+        lines.append("❓ " + bold("Без ответа"))
+        for question, msg_id in data.unanswered[:5]:
+            lines.append("• " + _md_link(question, deeplink(data.chat_tg_id, msg_id)))
+        lines.append("")
+    if data.links:
+        lines.append("🔗 " + bold("Ссылки дня"))
+        lines += [f"• {esc_md(url)}" for url in data.links[:10]]
+        lines.append("")
+    if data.heroes:
+        lines += [esc_md(data.heroes), ""]
+    lines.append(_stats_line(data, esc_md))
+    return "\n".join(lines).strip()
 
 
 def _md_link(text: str, url: str) -> str:
     return f"[{esc_md(text)}]({url})"
 
 
+# ---------------------------------------------------------------- Telegram HTML
+
 def _html_link(text: str, url: str) -> str:
     return f'<a href="{esc_html(url)}">{esc_html(text)}</a>'
 
 
-def _render(data: DigestData, *, bold: Any, link: Any, plain: Any) -> str:
+def _expandable(lines: list[str]) -> str:
+    """Свёрнутая цитата Telegram: видно начало, остальное — по нажатию."""
+    return "<blockquote expandable>" + "\n".join(lines) + "</blockquote>"
+
+
+def _topic_html(topic: Topic, chat_tg_id: int, limit: int = TELEGRAM_LIMIT) -> str:
+    """Тема: заголовок и свёрнутые подробности. Слишком длинный пересказ
+    укорачивается до рендера — так разметка остаётся целой."""
+    head = f"{KIND_MARKS.get(topic.kind, '💬')} <b>{esc_html(topic.title)}</b>"
+    while True:
+        body = _topic_body(topic, chat_tg_id, link=_html_link, plain=esc_html)
+        block = f"{head}\n{_expandable(body)}"
+        text = topic.summary
+        if len(block) <= limit or len(text) < 50:
+            return block
+        excess = len(block) - limit
+        cut = text[: max(0, len(text) - excess - 10)].rsplit(" ", 1)[0]
+        topic = replace(topic, summary=cut.rstrip(" ,.;:") + "…")
+
+
+def _fit(block: str, limit: int) -> str:
+    """Блок длиннее лимита (очень длинная тема) — обрезаем текст, а не разметку."""
+    if len(block) <= limit:
+        return block
+    closing = "</blockquote>"
+    if block.endswith(closing):
+        room = limit - len(closing) - 1
+        opening = block.find("<blockquote expandable>") + len("<blockquote expandable>")
+        cut = block[:room].rfind("\n")
+        return block[: max(cut, opening)] + "…" + closing
+    return block[:limit - 1].rsplit("\n", 1)[0] + "…"
+
+
+def pack_blocks(blocks: list[str], limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """Сложить блоки в сообщения не длиннее лимита, не разрывая ни один блок."""
+    messages: list[str] = []
+    current = ""
+    for block in (_fit(b, limit) for b in blocks if b):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            messages.append(current)
+        current = block
+    if current:
+        messages.append(current)
+    return messages
+
+
+def digest_blocks(data: DigestData, limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """Дайджест по блокам: шапка, темы, оффтоп, вопросы, ссылки, итоги дня."""
     title = data.chat_title or str(data.chat_tg_id)
-    lines: list[str] = [bold(f"Дайджест «{title}» за {data.day:%d.%m.%Y}"), ""]
+    head = [f"<b>📰 Дайджест «{esc_html(title)}» за {data.day:%d.%m.%Y}</b>"]
 
     if not data.topics and not data.highlights:
-        lines.append("За день ничего заметного не обсуждали.")
-        lines += _stats_block(data, plain)
-        return "\n".join(lines).strip()
-
-    if data.highlights:
-        lines.append("📌 " + bold("Главное за день"))
-        lines += [f"• {plain(h)}" for h in data.highlights[:3]]
-        lines.append("")
-
-    for topic in data.topics:
-        lines += _topic_block(topic, data.chat_tg_id, bold=bold, link=link, plain=plain)
-
-    if data.unanswered:
-        lines.append("❓ " + bold("Без ответа"))
-        for question, msg_id in data.unanswered[:5]:
-            lines.append("• " + link(question, deeplink(data.chat_tg_id, msg_id)))
-        lines.append("")
-
-    if data.links:
-        lines.append("🔗 " + bold("Ссылки дня"))
-        lines += [f"• {plain(url)}" for url in data.links[:10]]
-        lines.append("")
-
-    lines += _stats_block(data, plain)
-    return "\n".join(lines).strip()
-
-
-KIND_MARKS = {
-    "decision": "🟢 [Решение]",
-    "insight": "💡 [Вывод]",
-    "resource": "🔗 [Ресурс]",
-    "announcement": "📣 [Анонс]",
-    "question": "❓ [Вопрос]",
-    "drama": "🔥 [Спор]",
-    "other": "•",
-}
-
-
-def digest_parts(data: DigestData) -> list[tuple[str, Topic | None]]:
-    """Разбить дайджест на сообщения: шапка, каждая тема отдельно, хвост.
-
-    Тема уходит своим сообщением, потому что кнопки 👍 👎 🔕 привязываются к
-    конкретной теме (TZ §4.7), а в Telegram клавиатура принадлежит сообщению.
-    """
-    title = data.chat_title or str(data.chat_tg_id)
-    head = [f"<b>Дайджест «{esc_html(title)}» за {data.day:%d.%m.%Y}</b>"]
-
-    if not data.topics and not data.highlights:
-        head += ["", "За день ничего заметного не обсуждали.", ""]
-        head += _stats_block(data, esc_html)
-        return [("\n".join(head), None)]
+        head += ["", "За день ничего заметного не обсуждали."]
+        tail = [esc_html(data.heroes)] if data.heroes else []
+        return ["\n".join(head), *tail, _stats_line(data, esc_html)]
 
     if data.highlights:
         head += ["", "📌 <b>Главное за день</b>"]
         head += [f"• {esc_html(h)}" for h in data.highlights[:3]]
 
-    parts: list[tuple[str, Topic | None]] = [("\n".join(head), None)]
+    blocks = ["\n".join(head)]
+    work, offtopic = _sections(data)
+    blocks += [_topic_html(t, data.chat_tg_id, limit) for t in work]
+    if offtopic:
+        blocks.append("☕ <b>Не по делу, но интересно</b>")
+        blocks += [_topic_html(t, data.chat_tg_id, limit) for t in offtopic]
 
-    for topic in data.topics:
-        block = _topic_block(
-            topic, data.chat_tg_id,
-            bold=lambda t: f"<b>{esc_html(t)}</b>", link=_html_link, plain=esc_html,
-        )
-        parts.append(("\n".join(block).strip(), topic))
-
-    tail: list[str] = []
     if data.unanswered:
-        tail += ["❓ <b>Без ответа</b>"]
-        for question, msg_id in data.unanswered[:5]:
-            tail.append("• " + _html_link(question, deeplink(data.chat_tg_id, msg_id)))
-        tail.append("")
+        items = [
+            "• " + _html_link(q, deeplink(data.chat_tg_id, msg_id))
+            for q, msg_id in data.unanswered[:5]
+        ]
+        blocks.append("❓ <b>Остались без ответа</b>\n" + "\n".join(items))
     if data.links:
-        tail += ["🔗 <b>Ссылки дня</b>"]
-        tail += [f"• {esc_html(url)}" for url in data.links[:10]]
-        tail.append("")
-    tail += _stats_block(data, esc_html)
-    parts.append(("\n".join(tail).strip(), None))
-    return parts
+        items = [f"• {esc_html(url)}" for url in data.links[:10]]
+        blocks.append("🔗 <b>Ссылки дня</b>\n" + _expandable(items))
+
+    tail = [esc_html(data.heroes)] if data.heroes else []
+    tail.append(_stats_line(data, esc_html))
+    blocks.append("\n\n".join(tail))
+    return blocks
 
 
-def _topic_block(topic: Topic, chat_tg_id: int, *, bold: Any, link: Any, plain: Any) -> list[str]:
-    """Формат темы по §4.7: вывод и «почему важно», а не пересказ."""
-    mark = KIND_MARKS.get(topic.kind, "•")
-    lines = [f"{mark} {bold(topic.title)}"]
-
-    # takeaway из рубрики точнее «решения» из map-стадии: он написан как вывод
-    verdict = topic.takeaway or topic.decision
-    if verdict:
-        lines.append(f"Вывод: {plain(verdict)}")
-    if topic.why:
-        lines.append(f"Почему важно: {plain(topic.why)}")
-    if topic.debate:
-        lines.append(f"Спорили: {plain(topic.debate)}")
-    if topic.mentions:
-        lines.append(f"Упоминали: {plain(', '.join(topic.mentions[:6]))}")
-
-    meta = [
-        f"👥 {len(topic.participants) or len(topic.contributors)}",
-        f"💬 {topic.msg_count}",
-    ]
-    if topic.reactions:
-        meta.append(f"❤️ {topic.reactions}")
-    anchor = link("↗️ к обсуждению", deeplink(chat_tg_id, topic.anchor_msg_id))
-    lines.append(f"{' · '.join(meta)} · {anchor}")
-    lines.append("")
-    return lines
+def digest_messages(data: DigestData, limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """Дайджест для Telegram: одно сообщение, а если не влезает — несколько."""
+    return pack_blocks(digest_blocks(data, limit), limit)
 
 
-def _stats_block(data: DigestData, plain: Any) -> list[str]:
-    lines = [plain(data.heroes), ""] if data.heroes else []
-    parts = [f"📊 {data.msg_count} сообщений", f"{data.participants} участников"]
-    if data.noise_count:
-        parts.append(f"{data.noise_count} коротких реплик не в счёт")
-    if data.busiest_thread:
-        parts.append(f"самый активный тред — «{plain(data.busiest_thread.title)}»")
-    return [*lines, ", ".join(parts)]
+def render_html(data: DigestData) -> str:
+    """Весь дайджест одним HTML-текстом — для предпросмотра и проверок."""
+    return "\n\n".join(digest_blocks(data))
+
+
+def topic_card(topic: Topic, chat_tg_id: int) -> str:
+    """Короткая карточка темы для оценки владельцем: заголовок, суть, ссылка."""
+    lines = [f"{KIND_MARKS.get(topic.kind, '💬')} <b>{esc_html(topic.title)}</b>"]
+    if topic.gist:
+        lines.append(esc_html(topic.gist))
+    lines.append(_html_link("к обсуждению", deeplink(chat_tg_id, topic.anchor_msg_id)))
+    return "\n".join(lines)

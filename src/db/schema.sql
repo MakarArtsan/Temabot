@@ -45,7 +45,7 @@ create table if not exists settings (
 create table if not exists llm_usage (
   id         bigserial primary key,
   chat_id    bigint,
-  purpose    text,                      -- score|summary|qa|vision
+  purpose    text,                      -- score|summary|qa|vision|lore
   model      text,
   tokens_in  int,
   tokens_out int,
@@ -228,6 +228,26 @@ create table if not exists chat_members (
   primary key (chat_id, tg_user_id)
 );
 
+-- Лор чата: местные мемы, легендарные персонажи, истории и роли участников
+-- (решение владельца, см. PROGRESS). Пополняется моделью по итогам дня, виден
+-- только владельцу в админке. Роли — только у тех, кто не скрылся по /optout.
+create table if not exists lore (
+  id          bigserial primary key,
+  chat_id     bigint references chats(id) on delete cascade,
+  kind        text not null,
+  title       text not null,
+  body        text default '',
+  tg_user_id  bigint,                 -- о ком запись (только для роли)
+  first_day   date,
+  last_day    date,
+  mentions    int default 1,          -- в скольких днях всплывало
+  sources     jsonb default '[]',     -- [{"day": ..., "msg_id": ...}] — где это видно
+  hidden      boolean default false,  -- владелец скрыл: в промпты и на страницу не идёт
+  updated_at  timestamptz default now(),
+  constraint lore_kind_check check (kind in ('meme', 'legend', 'story', 'role'))
+);
+create unique index if not exists lore_chat_kind_title on lore (chat_id, kind, lower(title));
+
 -- ------------------------------------------------- приватность (TZ §9)
 
 -- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями
@@ -244,7 +264,7 @@ begin
   foreach t in array array[
     'chats', 'authors', 'copier_blocklist', 'settings', 'llm_usage', 'messages',
     'chunks', 'digests', 'digest_items', 'feedback', 'qa_log', 'thread_contrib',
-    'author_stats_daily', 'state', 'chat_members'
+    'author_stats_daily', 'state', 'chat_members', 'lore'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;
