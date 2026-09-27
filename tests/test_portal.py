@@ -115,11 +115,22 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     async def is_member(chat: Chat, user_id: int, **kw: Any) -> bool:
         return user_id == OWNER or user_id in state["members"]
 
+    state["lore"] = [
+        {"id": 1, "kind": "meme", "title": "Кнопка «Сделать красиво»",
+         "body": "Вечная просьба к ИИ",
+         "tg_user_id": None, "person": None, "mentions": 3},
+        {"id": 2, "kind": "role", "title": "Главный скептик", "body": "Всегда просит пруфы",
+         "tg_user_id": 1, "person": "Петя", "mentions": 5},
+    ]
+
+    async def list_lore(chat_id: int, **kw: Any) -> list[dict[str, Any]]:
+        return list(state["lore"])
+
     for name, fn in {
         "get_chat_by_id": get_chat_by_id, "list_chats": list_chats,
         "list_portal_chats": list_portal_chats, "list_chat_digests": list_chat_digests,
         "get_digest": get_digest, "messages_per_day": messages_per_day,
-        "get_author_stats": get_author_stats,
+        "get_author_stats": get_author_stats, "list_lore": list_lore,
     }.items():
         monkeypatch.setattr(web_app.repo, name, fn)
     monkeypatch.setattr(membership, "is_member", is_member)
@@ -312,7 +323,7 @@ def test_owner_can_preview_a_closed_portal(world: dict[str, Any]):
     page = client_as(OWNER).get("/g/1")
 
     assert page.status_code == 200
-    assert "закрыта" in page.text
+    assert "<b>закрыт</b>" in page.text
 
 
 def test_pages_are_not_cached_or_framed(world: dict[str, Any]):

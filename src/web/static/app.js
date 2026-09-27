@@ -282,6 +282,27 @@
     document.body.addEventListener("htmx:afterSwap", function (event) {
       initSliders(event.target);
     });
+    // Ответ с ошибкой htmx не вставляет — без этого кнопка просто «ничего не делала»
+    function showError(event, text) {
+      var target = event.detail && event.detail.target;
+      if (!target) return;
+      var box = document.createElement("div");
+      box.className = "note bad";
+      box.textContent = text;
+      if (target.id === "preview" || target.children.length === 0) {
+        target.replaceChildren(box);
+      } else {
+        target.insertAdjacentElement("afterbegin", box);
+      }
+    }
+    document.body.addEventListener("htmx:responseError", function (event) {
+      var status = event.detail.xhr ? event.detail.xhr.status : "";
+      showError(event, "Не получилось (ошибка сервера " + status + "). Попробуйте ещё раз; " +
+        "если повторится — причина в логе приложения.");
+    });
+    document.body.addEventListener("htmx:sendError", function (event) {
+      showError(event, "Нет связи с сервером — проверьте интернет и попробуйте ещё раз.");
+    });
   }
 
   if (document.readyState === "loading") {

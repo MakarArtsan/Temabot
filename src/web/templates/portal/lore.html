@@ -1,0 +1,27 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Лор · {{ chat_name(chat) }}{% endblock %}
+{% block content %}
+{% include "portal/_group_head.html" %}
+<div class="page-head"><div><h1>Лор чата</h1>
+  <p class="lead">Местные мемы, легендарные персонажи и истории — то, что понимают только свои. Пополняется каждый вечер.</p></div></div>
+{% if not total %}
+  <div class="card">{{ empty('Лор пока пуст', 'Он начнёт пополняться с ближайших выпусков.', 'book') }}</div>
+{% endif %}
+{% for mark, title, items in groups %}
+  {% if items %}
+  <section class="card">
+    <div class="card-head"><h2>{{ mark }} {{ title }}</h2><span class="muted small">{{ items|length }}</span></div>
+    {% for item in items %}
+      <article class="topic">
+        <div class="head"><h3>{{ item.title }}</h3>
+          {% if item.mentions > 1 %}<span class="badge">всплывало {{ item.mentions }} {{ plural(item.mentions, 'день', 'дня', 'дней') }}</span>{% endif %}</div>
+        {% if item.body %}<p class="takeaway">{{ item.body }}</p>{% endif %}
+        {% if item.first_day %}<div class="meta"><span>{{ icon('calendar', 'sm') }}с {{ item.first_day.strftime('%d.%m.%Y') }}</span>
+          {% for src in (item.sources or [])[:1] %}{% if src.msg_id %}<a href="{{ deeplink(chat.tg_id, src.msg_id) }}" target="_blank" rel="noopener noreferrer">откуда пошло {{ icon('external', 'sm') }}</a>{% endif %}{% endfor %}</div>{% endif %}
+      </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+{% endfor %}
+{% endblock %}

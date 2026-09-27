@@ -44,20 +44,35 @@ class AroundCb(CallbackData, prefix="around"):
 
 
 async def init_copier(bot: Bot) -> None:
-    """Один раз при старте: кэшируем username и поднимаем Telegraph."""
-    global _telegraph, _bot_username
-    _bot_username = (await bot.get_me()).username or ""
+    """Один раз при старте: кэшируем username и поднимаем Telegraph.
 
+    Недоступный Telegraph не должен ронять бота: раньше исключение отсюда
+    валило весь запуск, и бот не отвечал вообще ни на что. Теперь аккаунт
+    создаётся при первой нужде (`_telegraph_client`).
+    """
+    global _bot_username
+    _bot_username = (await bot.get_me()).username or ""
+    try:
+        await _telegraph_client()
+    except Exception:
+        log.warning("Telegraph пока недоступен — попробую при первом копировании", exc_info=True)
+
+
+async def _telegraph_client() -> Telegraph:
+    global _telegraph
+    if _telegraph is not None:
+        return _telegraph
     tg = Telegraph(access_token=cfg.TELEGRAPH_TOKEN or None)
     if not cfg.TELEGRAPH_TOKEN:
         acc = await asyncio.to_thread(
             tg.create_account, short_name=cfg.TELEGRAPH_SHORT_NAME
         )
         log.warning(
-            "Создан аккаунт Telegraph. Добавь в .env: TELEGRAPH_TOKEN=%s",
+            "Создан аккаунт Telegraph. Добавь в переменные: TELEGRAPH_TOKEN=%s",
             acc["access_token"],
         )
     _telegraph = tg
+    return tg
 
 
 class MentionsMe(Filter):
@@ -90,10 +105,10 @@ def _strip_mention(text: str) -> str:
 
 
 async def _make_page(text: str) -> str:
-    assert _telegraph is not None, "init_copier() не вызван"
+    telegraph = await _telegraph_client()
     content = f"<code>{html.escape(text).replace(chr(10), '<br>')}</code>"
     page = await asyncio.to_thread(
-        _telegraph.create_page,
+        telegraph.create_page,
         title="Текст для копирования",
         html_content=content,
     )

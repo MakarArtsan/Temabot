@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
+from typing import Any
+from urllib.parse import urlsplit
 
 from aiogram import Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -16,7 +19,13 @@ from src.bot import (
 )
 from src.bot import handlers_copier as copier
 from src.bot.client import create_bot
-from src.bot.middlewares import CopierAccess, CopierRateLimit, OwnerOnly, RateLimit
+from src.bot.middlewares import (
+    CopierAccess,
+    CopierRateLimit,
+    LastUpdateMark,
+    OwnerOnly,
+    RateLimit,
+)
 from src.config import cfg
 from src.db import pool, repo
 from src.db.migrate import apply_schema
@@ -69,6 +78,7 @@ def build_dispatcher() -> Dispatcher:
     qa.callback_query.middleware(OwnerOnly())
 
     dp = Dispatcher()
+    dp.update.outer_middleware(LastUpdateMark())
     dp.include_router(copier.router)
     dp.include_router(admin)
     dp.include_router(feedback)
@@ -77,6 +87,36 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(qa)
     _dispatcher = dp
     return dp
+
+
+WEBHOOK_KEY = "bot:webhook"
+
+
+async def check_updates_channel(bot: Any) -> None:
+    """Снять вебхук, если он остался от прежнего хостинга бота.
+
+    Пока у бота есть вебхук, Telegram отдаёт входящие туда, а getUpdates
+    отвечает конфликтом: дайджесты уходят (это исходящие), а на упоминания и
+    команды бот молчит. Сообщения, накопившиеся в очереди, не выбрасываем.
+    """
+    try:
+        info = await bot.get_webhook_info()
+    except Exception:
+        log.warning("Не удалось проверить вебхук бота", exc_info=True)
+        return
+    url = getattr(info, "url", "") or ""
+    if not url:
+        return
+    host = urlsplit(url).hostname or "?"
+    log.warning(
+        "У бота был вебхук на %s — снимаю, иначе входящие сюда не доходят "
+        "(последняя ошибка вебхука: %s)", host, getattr(info, "last_error_message", None),
+    )
+    await bot.delete_webhook(drop_pending_updates=False)
+    if cfg.DATABASE_URL:
+        await repo.set_state(
+            WEBHOOK_KEY, {"removed": host, "at": datetime.now(UTC).isoformat()}
+        )
 
 
 async def run() -> None:
@@ -104,6 +144,9 @@ async def run() -> None:
             await asyncio.wait_for(handlers_admin.refresh_chat_titles(bot), 30)
         except Exception:
             log.warning("Названия групп не обновились, повторю ночью", exc_info=True)
+
+    # входящие должны доходить до этого процесса — иначе копировщик и команды молчат
+    await check_updates_channel(bot)
 
     # кэшируем username и поднимаем Telegraph до начала приёма сообщений
     await copier.init_copier(bot)

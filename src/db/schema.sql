@@ -208,7 +208,7 @@ alter table digests add column if not exists published_msg_ids bigint[];
 
 -- Страница для участников группы (решение владельца, см. TZ §9): только чтение,
 -- вход через Telegram, пускает лишь тех, кто состоит в группе.
--- off — закрыта (по умолчанию), digests — дайджесты, all — дайджесты и рейтинги.
+-- off — закрыта (по умолчанию), digests — выпуски, all — выпуски, рейтинги и лор (без ролей).
 alter table chats add column if not exists portal text default 'off';
 do $$
 begin

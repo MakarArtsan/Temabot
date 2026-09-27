@@ -1,0 +1,9 @@
+{% from "_ui.html" import icon %}
+<a class="row-link" href="/g/{{ chat.id }}/d/{{ d.day.isoformat() }}">
+  <span class="day"><b>{{ d.day.day }}</b><span>{{ month_short(d.day) }}</span></span>
+  <div class="text">
+    <div class="title">{{ d.headline }}</div>
+    <div class="hint">{{ weekday(d.day) }} · {{ d.topics_count }} {{ plural(d.topics_count, 'тема', 'темы', 'тем') }} · {{ num(d.msg_count) }} сообщ.</div>
+  </div>
+  {{ icon('chevron', 'chev') }}
+</a>

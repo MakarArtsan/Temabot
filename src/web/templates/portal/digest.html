@@ -1,17 +1,71 @@
 {% extends "portal/base.html" %}
-{% from "_ui.html" import icon, digest_view %}
-{% block title %}{{ day.strftime('%d.%m') }} · {{ chat_name(chat) }}{% endblock %}
+{% from "_ui.html" import icon, badge, digest_view %}
+{% block title %}{{ article.headline or ('Выпуск ' ~ day.strftime('%d.%m')) }} · {{ chat_name(chat) }}{% endblock %}
 {% block content %}
-<a class="eyebrow" href="/g/{{ chat.id }}">{{ icon('back', 'sm') }} {{ chat_name(chat) }}</a>
-<div class="page-head">
-  <div>
-    <h1>{{ weekday(day)|capitalize }}, {{ day.strftime('%d.%m.%Y') }}</h1>
-    <p class="lead">Дайджест дня: выводы, а не пересказ. Ссылки ведут к сообщениям в Telegram.</p>
-  </div>
-  <div class="page-actions">
+{% include "portal/_group_head.html" %}
+<div class="issue-nav">
+  <a class="eyebrow" href="/g/{{ chat.id }}/digests">{{ icon('back', 'sm') }} Все выпуски</a>
+  <div class="btn-row">
     {% if prev_day %}<a class="btn ghost sm" href="/g/{{ chat.id }}/d/{{ prev_day.isoformat() }}">{{ icon('back', 'sm') }}{{ prev_day.strftime('%d.%m') }}</a>{% endif %}
     {% if next_day %}<a class="btn ghost sm" href="/g/{{ chat.id }}/d/{{ next_day.isoformat() }}">{{ next_day.strftime('%d.%m') }}{{ icon('chevron', 'sm') }}</a>{% endif %}
   </div>
 </div>
-{{ digest_view(data, show_heroes=ratings_visible) }}
+
+{% if stories %}
+<article class="issue">
+  <header class="issue-head">
+    <p class="kicker">{{ chat_name(chat) }} · {{ weekday(day) }}, {{ day.strftime('%d.%m.%Y') }}</p>
+    <h1 class="issue-title">{{ article.headline }}</h1>
+    {% if article.lead %}<p class="lead-text">{{ article.lead }}</p>{% endif %}
+  </header>
+
+  {% if data.highlights %}
+  <aside class="card issue-box">
+    <h2>Коротко</h2>
+    <ul class="highlights">{% for line in data.highlights[:3] %}<li>{{ icon('pin') }}<span>{{ line }}</span></li>{% endfor %}</ul>
+  </aside>
+  {% endif %}
+
+  {% set ns = namespace(offtopic=false) %}
+  {% for story, t in stories %}
+    {% if t.is_offtopic and not ns.offtopic %}{% set ns.offtopic = true %}<h2 class="issue-section">☕ Не по делу, но интересно</h2>{% endif %}
+    <section class="story">
+      <p class="kicker">{{ story.kicker or kind_label(t.kind) }}</p>
+      <h2>{{ story.headline }}</h2>
+      {% if story.hook %}<p class="hook">{{ story.hook }}</p>{% endif %}
+      {% for para in story.text.split('\n\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
+      {% if t.sides %}
+        <p class="sides">{% for side in t.sides %}<span><b>{{ side.who }}</b> — {{ side.stance }}</span>{% endfor %}</p>
+      {% endif %}
+      <div class="meta">
+        {% set people = t.participants|length or t.contributors|length %}
+        {% if people %}<span>{{ icon('groups', 'sm') }}{{ people }}</span>{% endif %}
+        <span>{{ icon('message', 'sm') }}{{ t.msg_count }}</span>
+        {% if t.reactions %}<span>{{ icon('heart', 'sm') }}{{ t.reactions }}</span>{% endif %}
+        <a href="{{ deeplink(data.chat_tg_id, t.anchor_msg_id) }}" target="_blank" rel="noopener noreferrer">к обсуждению в Telegram {{ icon('external', 'sm') }}</a>
+      </div>
+    </section>
+  {% endfor %}
+
+  {% if data.unanswered %}
+  <section class="card">
+    <div class="card-head"><h2>Кто знает ответ?</h2></div>
+    <ul class="plain-list">
+      {% for question, msg_id in data.unanswered[:5] %}
+        <li><a href="{{ deeplink(data.chat_tg_id, msg_id) }}" target="_blank" rel="noopener noreferrer">{{ question }}</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if ratings_visible and data.heroes %}
+    <div class="note accent">{{ icon('trophy') }}<p>{{ data.heroes }}</p></div>
+  {% endif %}
+  <p class="muted small">{{ data.msg_count }} {{ plural(data.msg_count, 'сообщение', 'сообщения', 'сообщений') }},
+    {{ data.participants }} {{ plural(data.participants, 'участник', 'участника', 'участников') }}.</p>
+</article>
+{% else %}
+  <div class="page-head"><div><h1>{{ weekday(day)|capitalize }}, {{ day.strftime('%d.%m.%Y') }}</h1>
+    <p class="lead">Дайджест дня: выводы, а не пересказ. Ссылки ведут к сообщениям в Telegram.</p></div></div>
+  {{ digest_view(data, show_heroes=ratings_visible) }}
+{% endif %}
 {% endblock %}

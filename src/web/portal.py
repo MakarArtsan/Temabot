@@ -123,6 +123,28 @@ def render(request: Request, name: str, context: dict[str, Any], status: int = 2
     return TEMPLATES.TemplateResponse(request, name, context, status_code=status)
 
 
+def extras_visible(chat: Chat, viewer: Viewer) -> bool:
+    """Рейтинги и лор — только в режиме «всё» (владелец видит всегда)."""
+    return ratings_visible(chat, viewer)
+
+
+async def page_context(viewer: Viewer, chat: Chat, tab: str) -> dict[str, Any]:
+    """Общее для всех страниц группы: вкладки нижней панели и кто смотрит."""
+    extras = extras_visible(chat, viewer)
+    tabs = [("overview", f"/g/{chat.id}", "home", "Обзор"),
+            ("digests", f"/g/{chat.id}/digests", "digest", "Выпуски")]
+    if extras:
+        tabs += [("ratings", f"/g/{chat.id}/ratings", "trophy", "Рейтинги"),
+                 ("lore", f"/g/{chat.id}/lore", "book", "Лор")]
+    return {
+        "chat": chat,
+        "is_owner": viewer.is_owner,
+        "ratings_visible": extras,
+        "tab": tab,
+        "tabs": tabs,
+    }
+
+
 @router.get("/g", response_class=HTMLResponse)
 async def portal_home(request: Request) -> Response:
     viewer = viewer_of(request)
@@ -134,29 +156,57 @@ async def portal_home(request: Request) -> Response:
 
 @router.get("/g/{chat_id}", response_class=HTMLResponse)
 async def portal_group(request: Request, chat_id: int) -> HTMLResponse:
+    """Обзор группы: последний выпуск, активность, герои недели, свежий лор."""
+    from src.bot.handlers_ratings import resolve_period
+    from src.jobs.nominations import usefulness_scale
     from src.web.app import local_today
 
     viewer, chat = await open_chat(request, chat_id)
+    context = await page_context(viewer, chat, "overview")
     digests = await repo.list_chat_digests(chat.id, limit=ARCHIVE_DAYS)
     per_day = await repo.messages_per_day(chat.id, days=ACTIVITY_DAYS)
     counts = {row["day"]: int(row["count"]) for row in per_day}
+    today = local_today()
+    week = sum(v for d, v in counts.items() if (today - d).days < 7)
 
-    return render(
-        request,
-        "portal/group.html",
-        {
-            "chat": chat,
-            "is_owner": viewer.is_owner,
-            "ratings_visible": ratings_visible(chat, viewer),
-            "digests": [archive_row(d) for d in digests],
-            "latest": digest_data(digests[0], chat) if digests else None,
-            "activity": daily_series(counts, local_today(), ACTIVITY_DAYS),
-        },
+    heroes: list[tuple[str, int]] = []
+    lore: list[dict[str, Any]] = []
+    if context["ratings_visible"]:
+        window = resolve_period("week")
+        rows = await repo.get_author_stats(
+            chat.id, date_from=window.date_from, date_to=window.date_to, hide_optout=True
+        )
+        scale = usefulness_scale(rows)
+        best = sorted(rows, key=lambda r: float(r.get("usefulness") or 0), reverse=True)[:3]
+        heroes = [(str(r.get("name") or "Участник"), scale.get(int(r["tg_user_id"]), 0))
+                  for r in best if float(r.get("usefulness") or 0) > 0]
+        lore = [r for r in await repo.list_lore(chat.id) if r["kind"] != "role"][:3]
+
+    context.update(
+        digests=[archive_row(d) for d in digests[:5]],
+        issues=len(digests),
+        latest=digest_data(digests[0], chat) if digests else None,
+        latest_day=digests[0].day if digests else None,
+        activity=daily_series(counts, today, ACTIVITY_DAYS),
+        week_messages=week,
+        heroes=heroes,
+        lore=lore,
     )
+    return render(request, "portal/group.html", context)
+
+
+@router.get("/g/{chat_id}/digests", response_class=HTMLResponse)
+async def portal_digests(request: Request, chat_id: int) -> HTMLResponse:
+    viewer, chat = await open_chat(request, chat_id)
+    context = await page_context(viewer, chat, "digests")
+    digests = await repo.list_chat_digests(chat.id, limit=ARCHIVE_DAYS)
+    context["digests"] = [archive_row(d) for d in digests]
+    return render(request, "portal/digests.html", context)
 
 
 @router.get("/g/{chat_id}/d/{day}", response_class=HTMLResponse)
 async def portal_digest(request: Request, chat_id: int, day: str) -> HTMLResponse:
+    """Выпуск дня: статья с заголовками и хуками, а у старых дней — дайджест."""
     viewer, chat = await open_chat(request, chat_id)
     try:
         target = date_type.fromisoformat(day)
@@ -168,19 +218,42 @@ async def portal_digest(request: Request, chat_id: int, day: str) -> HTMLRespons
         raise HTTPException(status_code=404)
 
     days = [d.day for d in await repo.list_chat_digests(chat.id, limit=ARCHIVE_DAYS)]
-    return render(
-        request,
-        "portal/digest.html",
-        {
-            "chat": chat,
-            "is_owner": viewer.is_owner,
-            "ratings_visible": ratings_visible(chat, viewer),
-            "day": target,
-            "data": data,
-            "prev_day": max((d for d in days if d < target), default=None),
-            "next_day": min((d for d in days if d > target), default=None),
-        },
+    context = await page_context(viewer, chat, "digests")
+    by_thread = {t.thread_id: t for t in data.topics}
+    stories = [
+        (story, by_thread[story["thread_id"]])
+        for story in (data.article or {}).get("stories", [])
+        if story.get("thread_id") in by_thread
+    ]
+    context.update(
+        day=target,
+        data=data,
+        article=data.article or {},
+        stories=stories,
+        prev_day=max((d for d in days if d < target), default=None),
+        next_day=min((d for d in days if d > target), default=None),
     )
+    return render(request, "portal/digest.html", context)
+
+
+@router.get("/g/{chat_id}/lore", response_class=HTMLResponse)
+async def portal_lore(request: Request, chat_id: int) -> HTMLResponse:
+    """Лор чата для участников: мемы, персонажи и истории. Ролей людей здесь нет."""
+    viewer, chat = await open_chat(request, chat_id)
+    if not extras_visible(chat, viewer):
+        raise HTTPException(status_code=404)
+    context = await page_context(viewer, chat, "lore")
+    rows = [r for r in await repo.list_lore(chat.id) if r["kind"] != "role"]
+    context["groups"] = [
+        (mark, title, [r for r in rows if r["kind"] == kind])
+        for kind, mark, title in (
+            ("meme", "😄", "Мемы и словечки"),
+            ("legend", "🦸", "Легендарные персонажи"),
+            ("story", "📖", "Истории"),
+        )
+    ]
+    context["total"] = len(rows)
+    return render(request, "portal/lore.html", context)
 
 
 @router.get("/g/{chat_id}/ratings", response_class=HTMLResponse)
@@ -210,20 +283,15 @@ async def portal_ratings(request: Request, chat_id: int, period: str = "week") -
     names = [str(r.get("name") or "Участник") for r in useful]
     values = [scale.get(int(r["tg_user_id"]), 0) for r in useful]
 
-    return render(
-        request,
-        "portal/ratings.html",
-        {
-            "chat": chat,
-            "is_owner": viewer.is_owner,
-            "ratings_visible": True,
-            "period": window,
-            "has_rows": bool(rows),
-            "scale": scale,
-            "tops": [(n, top) for n, top in tops if top],
-            "leaders": {
-                "spec": {"labels": names, "values": values, "unit": "из 100", "max": 100},
-                "rows": list(zip(names, values, strict=True)),
-            },
+    context = await page_context(viewer, chat, "ratings")
+    context.update(
+        period=window,
+        has_rows=bool(rows),
+        scale=scale,
+        tops=[(n, top) for n, top in tops if top],
+        leaders={
+            "spec": {"labels": names, "values": values, "unit": "из 100", "max": 100},
+            "rows": list(zip(names, values, strict=True)),
         },
     )
+    return render(request, "portal/ratings.html", context)

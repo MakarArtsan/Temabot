@@ -1,16 +1,39 @@
 {% extends "_layout.html" %}
 {% from "_ui.html" import icon %}
+{% set tabs = tabs|default([]) %}
 {% block body_class %}portal{% endblock %}
 {% block shell %}
-<header class="portal-top">
-  <div class="inner">
-    <a class="brand" href="/g"><span class="brand-mark">{{ icon('logo') }}</span>Дайджесты</a>
-    <span class="spacer"></span>
-    {% if is_owner %}<a class="btn ghost sm" href="/">{{ icon('sliders', 'sm') }}Админка</a>{% endif %}
-    <a class="icon-btn" href="/logout" aria-label="Выйти" title="Выйти">{{ icon('logout') }}</a>
+<div class="app">
+  <aside class="sidebar" aria-label="Разделы">
+    <a class="brand" href="{{ '/g/' ~ chat.id if chat else '/g' }}"><span class="brand-mark">{{ icon('logo') }}</span>{{ chat_name(chat) if chat else 'Дайджесты' }}</a>
+    {% for key, href, ic, label in tabs %}
+      <a class="nav {{ 'on' if tab == key }}" href="{{ href }}" {% if tab == key %}aria-current="page"{% endif %}>{{ icon(ic) }}{{ label }}</a>
+    {% endfor %}
+    <div class="foot">
+      <a class="nav" href="/g">{{ icon('groups') }}Все мои группы</a>
+      {% if is_owner %}<a class="nav" href="/">{{ icon('sliders') }}Админка</a>{% endif %}
+      <a class="nav" href="/logout">{{ icon('logout') }}Выйти</a>
+    </div>
+  </aside>
+
+  <div>
+    <header class="topbar">
+      <a class="brand" href="{{ '/g/' ~ chat.id if chat else '/g' }}"><span class="brand-mark">{{ icon('logo') }}</span><span class="brand-name">{{ chat_name(chat) if chat else 'Дайджесты' }}</span></a>
+      <span class="spacer"></span>
+      {% if is_owner %}<a class="icon-btn" href="/" aria-label="Админка">{{ icon('sliders') }}</a>{% endif %}
+      <a class="icon-btn" href="/logout" aria-label="Выйти">{{ icon('logout') }}</a>
+    </header>
+    <main class="content {{ 'no-tabbar' if not tabs }}">
+      {% block content %}{% endblock %}
+    </main>
   </div>
-</header>
-<main class="content no-tabbar">
-  {% block content %}{% endblock %}
-</main>
+
+  {% if tabs %}
+  <nav class="tabbar" aria-label="Разделы" style="--tabs: {{ tabs|length }}">
+    {% for key, href, ic, label in tabs %}
+      <a class="{{ 'on' if tab == key }}" href="{{ href }}" {% if tab == key %}aria-current="page"{% endif %}>{{ icon(ic) }}<span>{{ label }}</span></a>
+    {% endfor %}
+  </nav>
+  {% endif %}
+</div>
 {% endblock %}

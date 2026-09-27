@@ -34,7 +34,7 @@ from src.digest.publish import (
     unpublish_digest,
 )
 from src.digest.render import deeplink
-from src.web import auth, labels, membership
+from src.web import auth, jobs, labels, membership
 
 log = logging.getLogger(__name__)
 
@@ -391,12 +391,22 @@ async def groups_update(
             raise HTTPException(400, "Недопустимый режим публикации")
         await repo.set_chat_flags(chat_tg_id, publish=value)
     elif field == "portal":
-        # страница участников: закрыта / дайджесты / дайджесты и рейтинги
+        # раздел участников: закрыт / выпуски / выпуски, рейтинги и лор
         if value not in labels.PORTAL_MODES:
             raise HTTPException(400, "Недопустимый режим страницы участников")
         changed = await repo.set_chat_flags(chat_tg_id, portal=value)
         if changed is not None:
             membership.forget(changed.id)
+    elif field == "publish_format":
+        # в группу — коротким постом со ссылкой на выпуск или всем дайджестом
+        from src.digest.publish import PUBLISH_FORMATS
+
+        if value not in PUBLISH_FORMATS:
+            raise HTTPException(400, "Недопустимый формат публикации")
+        current = await repo.get_chat_by_tg_id(chat_tg_id)
+        if current is None:
+            raise HTTPException(404, "Группа не найдена")
+        await repo.update_chat_settings(current.id, {"publish_format": value})
     elif field == "ratings_publish":
         current = await repo.get_chat_by_tg_id(chat_tg_id)
         if current is None:
@@ -493,39 +503,53 @@ async def selection_preview(
     request: Request, chat_id: int, day: str = Form(""), csrf_token: str = Form(""),
     _: dict = Depends(auth.require_owner),
 ) -> HTMLResponse:
-    """«Прогнать на вчера»: превью с текущими настройками, без отправки (TZ §4.9)."""
-    auth.check_csrf(request, csrf_token)
-    from src.digest import pipeline as digest_pipeline
+    """«Проверить на прошлом дне»: превью с текущими настройками, без отправки (TZ §4.9).
 
+    Сборка дня длится минутами, поэтому идёт в фоне: ответ — карточка
+    «считаю…», которая сама спрашивает, готово ли (иначе прокси рвёт запрос).
+    """
+    auth.check_csrf(request, csrf_token)
     chat = await repo.get_chat_by_id(chat_id)
     if chat is None:
         raise HTTPException(404, "Группа не найдена")
-
     try:
         target = date_type.fromisoformat(day) if day else local_today() - timedelta(days=1)
     except ValueError:
         return render(request, "_preview.html", {"error": "дата должна быть вида 2026-09-20",
                                                  "day": local_today()})
-    stored = await repo.get_digest(chat.id, target)
 
-    try:
+    async def build() -> dict[str, Any]:
+        from src.digest import pipeline as digest_pipeline
+
+        stored = await repo.get_digest(chat.id, target)
         # save=False: превью ничего не перезаписывает и никуда не отправляется
         result = await digest_pipeline.build_digest(chat, target)
-    except Exception as exc:
-        log.exception("Превью дайджеста не собралось")
-        return render(request, "_preview.html", {"error": str(exc), "day": target})
-
-    return render(
-        request,
-        "_preview.html",
-        {
+        return {
             "day": target,
             "result": result,
             "cost": cost_of(result.usage.tokens_in, result.usage.tokens_out),
             "old_markdown": stored.summary_md if stored else "",
             "topics": sorted(result.all_topics, key=lambda t: -t.score),
-        },
-    )
+        }
+
+    job = jobs.start(f"preview:{chat.id}:{target}", f"пробный дайджест за {target:%d.%m}", build)
+    return render(request, "_job.html", {"job": job, "view": "preview"})
+
+
+@app.get("/jobs/{job_id}", response_class=HTMLResponse)
+async def job_status(
+    request: Request, job_id: str, view: str = "digest", _: dict = Depends(auth.require_owner)
+) -> HTMLResponse:
+    """Состояние фоновой задачи — страница опрашивает его, пока задача идёт."""
+    job = jobs.get(job_id)
+    if job is None:
+        return HTMLResponse('<p class="muted">Задача не найдена — возможно, админка '
+                            "перезапускалась. Запустите ещё раз.</p>")
+    if job.done and view == "preview":
+        if job.error:
+            return render(request, "_preview.html", {"error": job.error, "day": None})
+        return render(request, "_preview.html", dict(job.result))
+    return render(request, "_job.html", {"job": job, "view": view})
 
 
 # --------------------------------------------------------------- дайджесты
@@ -842,7 +866,9 @@ async def qa_page(request: Request, _: dict = Depends(auth.require_owner)) -> HT
 # ---------------------------------------------------------------- система
 
 @app.get("/system", response_class=HTMLResponse)
-async def system_page(request: Request, _: dict = Depends(auth.require_owner)) -> HTMLResponse:
+async def system_page(
+    request: Request, job: str | None = None, _: dict = Depends(auth.require_owner)
+) -> HTMLResponse:
     now = datetime.now(ZoneInfo(cfg.TZ))
     return render(
         request,
@@ -853,6 +879,7 @@ async def system_page(request: Request, _: dict = Depends(auth.require_owner)) -
             "chats": await repo.list_chats(),
             "pending_media": await repo.pending_media_count(),
             "now": now,
+            "job": jobs.get(job) if job else None,
         },
     )
 
@@ -873,8 +900,14 @@ async def system_run_digest(
         target = date_type.fromisoformat(day) if day else local_today()
     except ValueError:
         raise HTTPException(400, "Дата должна быть вида 2026-09-20") from None
-    await digest_pipeline.run_for_chat(chat, target, save=True)
-    return RedirectResponse("/digests", status_code=303)
+
+    async def build() -> int | None:
+        result = await digest_pipeline.run_for_chat(chat, target, save=True)
+        return result.digest_id
+
+    # сборка идёт минутами — в фоне, а страница «Система» показывает, как она идёт
+    job = jobs.start(f"digest:{chat.id}:{target}", f"дайджест за {target:%d.%m}", build)
+    return RedirectResponse(f"/system?job={job.id}", status_code=303)
 
 
 @app.post("/system/reindex")

@@ -145,6 +145,8 @@ class DigestData:
     busiest_thread: Topic | None = None
     low_value_count: int = 0
     heroes: str = ""          # строка «🏅 Герои дня» (TZ §4.10)
+    # выпуск-статья для сайта: {headline, lead, teaser: [...], stories: [...]}
+    article: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -160,6 +162,7 @@ class DigestData:
             "noise_count": self.noise_count,
             "low_value_count": self.low_value_count,
             "heroes": self.heroes,
+            "article": self.article,
         }
 
     def titled(self, title: str | None) -> DigestData:
@@ -189,6 +192,7 @@ class DigestData:
             busiest_thread=max(topics, key=lambda t: t.msg_count, default=None),
             low_value_count=int(data.get("low_value_count", 0)),
             heroes=str(data.get("heroes") or ""),
+            article=dict(data.get("article") or {}),
         )
 
 
@@ -424,4 +428,30 @@ def topic_card(topic: Topic, chat_tg_id: int) -> str:
     if topic.gist:
         lines.append(esc_html(topic.gist))
     lines.append(_html_link("к обсуждению", deeplink(chat_tg_id, topic.anchor_msg_id)))
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------- короткий пост в чат
+
+HASHTAG = "#дайджест"
+
+
+def teaser_html(data: DigestData, url: str) -> str:
+    """Короткий пост в группу: заголовок выпуска, лид, пара крючков, ссылка.
+
+    Полный выпуск — статьёй на сайте (страница участников), сюда — только
+    приглашение его открыть.
+    """
+    article = data.article or {}
+    headline = str(article.get("headline") or "") or f"Дайджест за {data.day:%d.%m}"
+    lines = [f"📰 <b>{esc_html(headline)}</b>"]
+    lead = str(article.get("lead") or "")
+    if lead:
+        lines += ["", esc_html(lead)]
+    teaser = [str(t) for t in (article.get("teaser") or []) if str(t).strip()]
+    if not teaser:
+        teaser = list(data.highlights[:3]) or [t.title for t in data.topics[:3]]
+    lines.append("")
+    lines += [f"• {esc_html(t)}" for t in teaser[:4]]
+    lines += ["", _html_link("Читать выпуск целиком →", url), "", HASHTAG]
     return "\n".join(lines)

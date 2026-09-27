@@ -56,12 +56,34 @@ hx-vals='{"field":"{{ field }}","value":"{{ value }}","csrf_token":"{{ csrf }}"}
       </div>
     </div>
 
+    {% if chat.publish != 'off' %}
+    {% set fmt = (chat.settings or {}).get('publish_format', 'short') %}
+    <div class="row wrap">
+      <div class="text">
+        <div class="title">Как выглядит пост в группе</div>
+        <div class="hint">
+          «Коротко со ссылкой» — заголовок выпуска, пара крючков, #дайджест и ссылка на статью на сайте.
+          {% if chat.portal == 'off' %}<b>Сейчас страница участников закрыта — ссылку никто не откроет, поэтому уходит целиком.</b>{% endif %}
+        </div>
+      </div>
+      <div class="control">
+        <div class="seg" role="radiogroup" aria-label="Формат поста">
+          {% for mode, label in [('short', 'коротко со ссылкой'), ('full', 'целиком')] %}
+            <button class="{{ 'on' if fmt == mode }}" role="radio" aria-checked="{{ 'true' if fmt == mode else 'false' }}"
+                    {{ post('publish_format', mode) }}>{{ label }}</button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="row wrap">
       <div class="text">
         <div class="title">Страница для участников</div>
         <div class="hint">
-          Сайт только для чтения: участники входят через Telegram и видят дайджесты
-          {%- if chat.portal == 'all' %} и рейтинги{% endif %}. Настройки и исходные сообщения им не видны.
+          Раздел только для чтения, с такой же нижней панелью, как у админки: участники входят через Telegram
+          и видят обзор группы и выпуски{% if chat.portal == 'all' %}, рейтинги и лор (без ролей людей){% endif %}.
+          Настроек, оценок тем и исходных сообщений там нет.
           {% if chat.portal != 'off' %}Ссылка для группы: <a href="{{ portal_url }}" target="_blank" rel="noopener">{{ portal_url }}</a>{% endif %}
         </div>
       </div>
@@ -70,7 +92,7 @@ hx-vals='{"field":"{{ field }}","value":"{{ value }}","csrf_token":"{{ csrf }}"}
           {% for mode in ['off', 'digests', 'all'] %}
             <button class="{{ 'on' if chat.portal == mode }}" role="radio" aria-checked="{{ 'true' if chat.portal == mode else 'false' }}"
                     {% if mode == 'digests' and chat.portal == 'off' %}hx-confirm="Все участники группы «{{ name }}» смогут читать её дайджесты на сайте. Открыть?"{% endif %}
-                    {% if mode == 'all' and chat.portal != 'all' %}hx-confirm="Участники увидят рейтинги с именами. Админы группы согласны?"{% endif %}
+                    {% if mode == 'all' and chat.portal != 'all' %}hx-confirm="Участники увидят рейтинги с именами и лор чата (мемы, персонажи, истории — без ролей людей). Админы группы согласны?"{% endif %}
                     {{ post('portal', mode) }}>{{ portal_labels[mode] }}</button>
           {% endfor %}
         </div>

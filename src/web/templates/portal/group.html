@@ -1,52 +1,69 @@
 {% extends "portal/base.html" %}
-{% from "_ui.html" import icon, badge, chart, empty %}
+{% from "_ui.html" import icon, kpi, chart, empty %}
 {% block title %}{{ chat_name(chat) }}{% endblock %}
 {% block head %}<script src="/static/vendor/chart.umd.min.js?v={{ asset_version }}" defer></script>{% endblock %}
 {% block content %}
-{% set tab = 'digests' %}
 {% include "portal/_group_head.html" %}
+<div class="group-hero">
+  <div class="avatar" aria-hidden="true">{{ chat_name(chat)[:1]|upper }}</div>
+  <div style="min-width:0">
+    <h1 style="overflow-wrap:anywhere">{{ chat_name(chat) }}</h1>
+    <p class="muted small" style="margin:4px 0 0">Выпуски, рейтинги и лор группы — только для её участников</p>
+  </div>
+</div>
 
-{% if not digests %}
-  <div class="card">{{ empty('Дайджестов пока нет', 'Первый появится вечером, после того как бот разберёт переписку за день.', 'digest') }}</div>
+<div class="kpis">
+  {{ kpi('Сообщений за неделю', num(week_messages), '', 'message') }}
+  {{ kpi('Выпусков', num(issues), 'за последние два месяца', 'digest') }}
+</div>
+
+{% if latest %}
+<section class="card">
+  <div class="card-head">
+    <div><p class="eyebrow" style="margin:0">Свежий выпуск · {{ weekday(latest_day) }}, {{ latest_day.strftime('%d.%m') }}</p>
+      <h2 class="issue-title">{{ latest.article.headline or ('Дайджест за ' ~ latest_day.strftime('%d.%m')) }}</h2></div>
+  </div>
+  {% if latest.article.lead %}<p class="lead-text">{{ latest.article.lead }}</p>{% endif %}
+  {% if latest.highlights %}
+    <ul class="highlights">{% for line in latest.highlights[:3] %}<li>{{ icon('pin') }}<span>{{ line }}</span></li>{% endfor %}</ul>
+  {% elif not latest.topics %}<p class="muted">Тихий день — ничего заметного не обсуждали.</p>{% endif %}
+  <div class="btn-row" style="margin-top:14px"><a class="btn" href="/g/{{ chat.id }}/d/{{ latest_day.isoformat() }}">Читать выпуск {{ icon('chevron', 'sm') }}</a></div>
+</section>
 {% else %}
-  {% if latest %}
-  <section class="card">
-    <div class="card-head">
-      <div><p class="eyebrow" style="margin:0">Последний дайджест</p>
-        <h2>{{ weekday(digests[0].day)|capitalize }}, {{ digests[0].day.strftime('%d.%m.%Y') }}</h2></div>
-      <a class="btn sm" href="/g/{{ chat.id }}/d/{{ digests[0].day.isoformat() }}">Читать {{ icon('chevron', 'sm') }}</a>
-    </div>
-    {% if latest.highlights %}
-      <ul class="highlights">
-        {% for line in latest.highlights[:3] %}<li>{{ icon('pin') }}<span>{{ line }}</span></li>{% endfor %}
-      </ul>
-    {% elif latest.topics %}
-      <ul class="plain-list">{% for t in latest.topics[:4] %}<li>{{ t.title }}</li>{% endfor %}</ul>
-    {% else %}
-      <p class="muted">Тихий день — ничего заметного не обсуждали.</p>
-    {% endif %}
-  </section>
-  {% endif %}
+  <div class="card">{{ empty('Выпусков пока нет', 'Первый появится вечером, когда бот разберёт переписку за день.', 'digest') }}</div>
+{% endif %}
 
+<div class="grid two">
   {% if activity.has_data %}
   <section class="card">
     <div class="card-head"><div><h2>Сообщений в день</h2><p class="muted small">последние 30 дней</p></div></div>
     {{ chart('activity', 'columns', activity.spec, ['День', 'Сообщений'], activity.rows, 'Сообщений в группе по дням') }}
   </section>
   {% endif %}
+  {% if heroes or lore %}
+  <div class="stack">
+    {% if heroes %}
+    <section class="card">
+      <div class="card-head"><h2>🏅 Герои недели</h2><a class="btn ghost sm" href="/g/{{ chat.id }}/ratings">Все {{ icon('chevron', 'sm') }}</a></div>
+      {% for name, value in heroes %}
+        <div class="medal-row"><span class="place">{{ ['🥇','🥈','🥉'][loop.index0] }}</span><span class="who">{{ name }}</span><span class="val">{{ value }} из 100</span></div>
+      {% endfor %}
+    </section>
+    {% endif %}
+    {% if lore %}
+    <section class="card">
+      <div class="card-head"><h2>📜 Из лора</h2><a class="btn ghost sm" href="/g/{{ chat.id }}/lore">Весь {{ icon('chevron', 'sm') }}</a></div>
+      {% for item in lore %}<p><b>{{ item.title }}</b>{% if item.body %} — <span class="muted">{{ item.body }}</span>{% endif %}</p>{% endfor %}
+    </section>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
 
-  <section class="card day-list">
-    <div class="card-head"><h2>Архив</h2><span class="muted small">{{ digests|length }} {{ plural(digests|length, 'день', 'дня', 'дней') }}</span></div>
-    {% for d in digests %}
-      <a class="row-link" href="/g/{{ chat.id }}/d/{{ d.day.isoformat() }}">
-        <span class="day"><b>{{ d.day.day }}</b><span>{{ month_short(d.day) }}</span></span>
-        <div class="text">
-          <div class="title">{{ d.headline }}</div>
-          <div class="hint">{{ weekday(d.day) }} · {{ d.topics_count }} {{ plural(d.topics_count, 'тема', 'темы', 'тем') }} · {{ num(d.msg_count) }} сообщ.</div>
-        </div>
-        {{ icon('chevron', 'chev') }}
-      </a>
-    {% endfor %}
-  </section>
+{% if digests|length > 1 %}
+<section class="card day-list section">
+  <div class="card-head"><h2>Недавние выпуски</h2><a class="btn ghost sm" href="/g/{{ chat.id }}/digests">Архив {{ icon('chevron', 'sm') }}</a></div>
+  {% for d in digests[1:] %}{% include "portal/_issue_row.html" %}{% endfor %}
+</section>
 {% endif %}
 {% endblock %}

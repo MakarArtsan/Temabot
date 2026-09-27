@@ -1,0 +1,12 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Выпуски · {{ chat_name(chat) }}{% endblock %}
+{% block content %}
+{% include "portal/_group_head.html" %}
+<div class="page-head"><div><h1>Выпуски</h1><p class="lead">Каждый вечер бот разбирает переписку за день и собирает выпуск.</p></div></div>
+<section class="card day-list">
+  {% for d in digests %}{% include "portal/_issue_row.html" %}{% else %}
+    {{ empty('Выпусков пока нет', 'Первый появится вечером.', 'digest') }}
+  {% endfor %}
+</section>
+{% endblock %}

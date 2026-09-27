@@ -9,6 +9,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from aiogram import BaseMiddleware
@@ -182,4 +183,35 @@ class CopierRateLimit(RateLimit):
             # в группе молчим: предупреждение о лимите — это тоже флуд
             log.info("Лимит копирований исчерпан у %s", user.id)
             return None
+        return await handler(event, data)
+
+
+LAST_UPDATE_KEY = "bot:last_update"
+
+
+class LastUpdateMark(BaseMiddleware):
+    """Отметка «бот получил сообщение» для страницы «Система».
+
+    Если рассылка дайджестов работает, а бот ни на что не отвечает, — значит,
+    до него не доходят входящие (старый вебхук, второй экземпляр с тем же
+    токеном). По этой отметке это видно сразу. Пишем не чаще раза в 30 секунд.
+    """
+
+    def __init__(self, every_sec: float = 30.0) -> None:
+        self.every_sec = every_sec
+        self._last = 0.0
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        now = time.monotonic()
+        if now - self._last >= self.every_sec:
+            self._last = now
+            try:
+                await repo.set_state(LAST_UPDATE_KEY, {"at": datetime.now(UTC).isoformat()})
+            except Exception:
+                log.debug("Отметка входящих не записалась", exc_info=True)
         return await handler(event, data)

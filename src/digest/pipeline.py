@@ -316,6 +316,85 @@ async def make_highlights(
     return highlights[:3], usage
 
 
+async def make_article(
+    topics: list[Topic],
+    highlights: list[str],
+    chat: Chat,
+    day: date_type,
+    *,
+    lore: str = "",
+    llm: LLMCall = chat_json,
+) -> tuple[dict[str, Any], Usage]:
+    """Выпуск-статья для сайта: заголовки, хуки, тексты по темам дня.
+
+    Один вызов на день. Без статьи дайджест остаётся дайджестом: сбой модели
+    здесь ничего не ломает, пост в чат тогда уходит целиком.
+    """
+    if not topics:
+        return {}, Usage()
+    listing = "\n".join(
+        f"{t.thread_id}. [{t.kind}] {t.title}: {t.summary or t.gist}"
+        + (f" Спорили: {'; '.join(s['who'] + ' — ' + s['stance'] for s in t.sides)}."
+           if t.sides else "")
+        + (f" Итог: {t.decision}." if t.decision else "")
+        + (f" Зачем знать: {t.why}" if t.why else "")
+        for t in topics
+    )
+    user = prompts.ARTICLE_USER.format(
+        chat=chat.title or chat.tg_id,
+        day=f"{day:%d.%m.%Y}",
+        lore=prompts.LORE_HINT.format(lore=lore) if lore else "",
+        highlights="\n".join(f"- {h}" for h in highlights) or "—",
+        topics=listing,
+    )
+    try:
+        data, usage = await llm(
+            [
+                {"role": "system", "content": prompts.ARTICLE_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            purpose="article",
+            chat_id=chat.id,
+        )
+    except Exception:
+        log.warning("Статья выпуска не собралась", exc_info=True)
+        return {}, Usage()
+    return clean_article(data, topics), usage
+
+
+def clean_article(data: Any, topics: list[Topic]) -> dict[str, Any]:
+    """Проверить ответ модели: истории — только к настоящим темам, без пустых."""
+    if not isinstance(data, dict) or not str(data.get("headline") or "").strip():
+        return {}
+    known = {t.thread_id for t in topics}
+    stories = []
+    seen: set[int] = set()
+    for item in data.get("stories") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            thread_id = int(str(item.get("thread_id")))
+        except (TypeError, ValueError):
+            continue
+        headline = str(item.get("headline") or "").strip()
+        if thread_id not in known or thread_id in seen or not headline:
+            continue
+        seen.add(thread_id)
+        stories.append({
+            "thread_id": thread_id,
+            "kicker": str(item.get("kicker") or "").strip()[:40],
+            "headline": headline[:140],
+            "hook": str(item.get("hook") or "").strip()[:400],
+            "text": str(item.get("text") or "").strip()[:2500],
+        })
+    return {
+        "headline": str(data.get("headline")).strip()[:120],
+        "lead": str(data.get("lead") or "").strip()[:500],
+        "teaser": _as_str_list(data.get("teaser"))[:4],
+        "stories": stories,
+    }
+
+
 # -------------------------------------------------------------- сборка дня
 
 def collect_unanswered(threads: list[Thread], topics: list[Topic]) -> list[tuple[str, int]]:
@@ -393,6 +472,8 @@ async def build_digest(
 
     highlights, usage = await make_highlights(selected, chat, llm=llm)
     total_usage = total_usage + usage
+    article, usage = await make_article(selected, highlights, chat, day, lore=lore, llm=llm)
+    total_usage = total_usage + usage
 
     links: list[str] = []
     for topic in selected:
@@ -413,6 +494,7 @@ async def build_digest(
         noise_count=len(noise),
         busiest_thread=max(selected, key=lambda t: t.msg_count, default=None),
         low_value_count=sum(1 for t in threads if t.low_value),
+        article=article,
     )
 
     return DigestResult(

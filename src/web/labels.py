@@ -90,8 +90,8 @@ COPIER: dict[str, str] = {"allow": "работает", "ask": "спросить 
 PORTAL_MODES = ("off", "digests", "all")
 PORTAL: dict[str, str] = {
     "off": "закрыта",
-    "digests": "дайджесты",
-    "all": "дайджесты и рейтинги",
+    "digests": "выпуски",
+    "all": "выпуски, рейтинги и лор",
 }
 
 
@@ -188,6 +188,28 @@ def describe_states(states: dict[str, Any], now: datetime) -> list[ProcessState]
         if "chunks" in value:
             parts.append(f"фрагментов: {value['chunks']}")
         result.append(ProcessState(title, " · ".join(parts), at, "ok", "готово"))
+
+    incoming = states.get("bot:last_update")
+    in_at = _parse_time(incoming.get("at")) if isinstance(incoming, dict) else None
+    if in_at is not None:
+        result.append(ProcessState(
+            "Входящие боту", f"последнее сообщение или нажатие {ago(in_at, now)}", in_at,
+            "ok", "доходят",
+        ))
+    elif "bot:heartbeat" in states:
+        result.append(ProcessState(
+            "Входящие боту",
+            "ещё ни одного — упоминания и команды до бота не доходят "
+            "(второй экземпляр с тем же токеном?)",
+            None, "warn", "нет",
+        ))
+    hook = states.get("bot:webhook")
+    if isinstance(hook, dict):
+        at = _parse_time(hook.get("at"))
+        result.append(ProcessState(
+            "Старый вебхук бота", f"снят {ago(at, now)} (вёл на {hook.get('removed', '?')})",
+            at, "ok", "снят",
+        ))
 
     applied = states.get("schema_applied_at")
     if applied:

@@ -4,6 +4,7 @@
 {% block h1 %}Система{% endblock %}
 {% block lead %}<p class="lead">Живы ли процессы и ручные действия. Время — по часам бота: {{ now.strftime('%d.%m.%Y %H:%M') }}.</p>{% endblock %}
 {% block content %}
+{% if job %}{% include "_job.html" %}{% endif %}
 <section class="card">
   <div class="card-head"><h2>Процессы</h2></div>
   <div class="rows">

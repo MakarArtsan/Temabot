@@ -17,9 +17,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.config import cfg
 from src.db import repo
 from src.db.models import Chat
-from src.digest.render import DigestData, deeplink, digest_messages
+from src.digest.render import DigestData, deeplink, digest_messages, teaser_html
 
 log = logging.getLogger(__name__)
 
@@ -51,9 +52,31 @@ def ratings_are_public(chat: Chat) -> bool:
     return check(chat)
 
 
-def group_parts(data: DigestData, *, ratings_public: bool) -> list[str]:
-    """Текст для группы: тот же дайджест одним сообщением (длинный — несколькими),
-    темы свёрнуты под раскрывающиеся цитаты, кнопок оценки нет."""
+PUBLISH_FORMATS = {"short": "коротко со ссылкой", "full": "целиком"}
+
+
+def article_url(chat: Chat, day: Any) -> str:
+    """Ссылка на выпуск-статью на сайте — или "", если короткий пост не годится.
+
+    Короткий пост со ссылкой имеет смысл, только если участники могут эту
+    ссылку открыть: страница участников для группы включена и адрес сайта известен.
+    """
+    base = cfg.WEB_BASE_URL.rstrip("/")
+    fmt = (chat.settings or {}).get("publish_format", "short")
+    if not base or chat.portal == "off" or fmt == "full":
+        return ""
+    return f"{base}/g/{chat.id}/d/{day.isoformat()}"
+
+
+def group_parts(data: DigestData, *, ratings_public: bool, url: str = "") -> list[str]:
+    """Текст для группы.
+
+    Со ссылкой на выпуск — короткий пост: заголовок, крючки, ссылка, #дайджест.
+    Без неё — весь дайджест одним сообщением (длинный — несколькими), темы
+    свёрнуты под раскрывающиеся цитаты. Кнопок оценки в группе нет.
+    """
+    if url and data.article:
+        return [teaser_html(data, url)]
     if data.heroes and not ratings_public:
         data = dataclasses.replace(data, heroes="")
     return digest_messages(data)
@@ -64,7 +87,9 @@ def group_preview(digest_payload: dict[str, Any], chat: Chat) -> list[str]:
     if not digest_payload:
         return []
     data = DigestData.from_dict(digest_payload).titled(chat.title)
-    return group_parts(data, ratings_public=ratings_are_public(chat))
+    return group_parts(
+        data, ratings_public=ratings_are_public(chat), url=article_url(chat, data.day)
+    )
 
 
 def can_offer(chat: Chat | None, digest: Any) -> bool:
@@ -106,7 +131,10 @@ async def publish_digest(bot: Any, digest_id: int, *, auto: bool = False) -> Pub
 
     sent: list[int] = []
     try:
-        for part in group_parts(data, ratings_public=ratings_are_public(chat)):
+        parts = group_parts(
+            data, ratings_public=ratings_are_public(chat), url=article_url(chat, data.day)
+        )
+        for part in parts:
             message = await bot.send_message(
                 chat.tg_id,
                 part,
