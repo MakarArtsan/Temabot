@@ -273,9 +273,11 @@ async def portal_lore(request: Request, chat_id: int) -> HTMLResponse:
 
 
 @router.get("/g/{chat_id}/ratings", response_class=HTMLResponse)
-async def portal_ratings(request: Request, chat_id: int, period: str = "week") -> HTMLResponse:
+async def portal_ratings(
+    request: Request, chat_id: int, period: str = "week", sort: str = "useful"
+) -> HTMLResponse:
     from src.bot.handlers_ratings import PUBLIC_NOMINATIONS, resolve_period
-    from src.jobs.nominations import NOMINATIONS, top_of, usefulness_scale
+    from src.jobs.nominations import BY_KEY, NOMINATIONS, top_of, usefulness_scale
 
     viewer, chat = await open_chat(request, chat_id)
     if not ratings_visible(chat, viewer):
@@ -299,8 +301,17 @@ async def portal_ratings(request: Request, chat_id: int, period: str = "week") -
     names = [str(r.get("name") or "Участник") for r in useful]
     values = [scale.get(int(r["tg_user_id"]), 0) for r in useful]
 
+    # Таблица всех участников — только по открытым номинациям и счёту сообщений.
+    # «Цепляет» и «Сова» остаются владельцу: их столбцов (ответов ему, ночных) тут нет.
+    table_sorts = [BY_KEY[key] for key in (*PUBLIC_NOMINATIONS, "active") if key in BY_KEY]
+    order = BY_KEY[sort] if any(n.key == sort for n in table_sorts) else BY_KEY["useful"]
+    table = sorted(rows, key=order.value, reverse=True)
+
     context = await page_context(viewer, chat, "ratings")
     context.update(
+        table=table,
+        table_sorts=table_sorts,
+        sort=order.key,
         period=window,
         has_rows=bool(rows),
         scale=scale,

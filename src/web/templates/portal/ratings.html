@@ -9,7 +9,7 @@
 <div class="btn-row" style="justify-content:space-between;margin-bottom:14px">
   <div class="seg" role="radiogroup" aria-label="Период">
     {% for key, label in [('day','День'), ('week','Неделя'), ('month','Месяц')] %}
-      <a class="{{ 'on' if period.key == key }}" href="/g/{{ chat.id }}/ratings?period={{ key }}">{{ label }}</a>
+      <a class="{{ 'on' if period.key == key }}" href="/g/{{ chat.id }}/ratings?period={{ key }}&amp;sort={{ sort }}">{{ label }}</a>
     {% endfor %}
   </div>
   <span class="muted small">{{ period.date_from.strftime('%d.%m') }} — {{ period.date_to.strftime('%d.%m') }}</span>
@@ -39,6 +39,42 @@
       </section>
     {% endfor %}
   </div>
+
+  <section class="card section">
+    <div class="card-head">
+      <h2>Все участники</h2>
+      <form method="get" action="/g/{{ chat.id }}/ratings" class="btn-row">
+        <input type="hidden" name="period" value="{{ period.key }}">
+        <label class="small muted" for="sort">Сортировать</label>
+        <select id="sort" name="sort" onchange="this.form.submit()" style="max-width:220px;min-height:36px;padding:6px 32px 6px 10px">
+          {% for n in table_sorts %}<option value="{{ n.key }}" {{ 'selected' if sort == n.key }}>{{ n.title }}</option>{% endfor %}
+        </select>
+        <noscript><button class="btn ghost sm" type="submit">Показать</button></noscript>
+      </form>
+    </div>
+    <div class="table-wrap">
+      <table class="sticky-first">
+        <tr>
+          <th>Участник</th><th class="num">Польза</th><th class="num">Сообщ.</th><th class="num">Слов</th>
+          <th class="num">Реакций</th><th class="num">Начал тем</th><th class="num">Помог</th>
+          <th class="num">Ссылок</th><th class="num">Голос, мин</th>
+        </tr>
+        {% for row in table %}
+          <tr>
+            <td>{{ row.name or 'Участник' }}</td>
+            <td class="num"><b>{{ scale.get(row.tg_user_id, 0) }}</b></td>
+            <td class="num">{{ row.messages }}</td>
+            <td class="num">{{ row.words }}</td>
+            <td class="num">{{ row.reactions_got }}</td>
+            <td class="num">{{ row.threads_started }}</td>
+            <td class="num">{{ row.questions_answered }}</td>
+            <td class="num">{{ row.links }}</td>
+            <td class="num">{{ ((row.voice_sec or 0) / 60)|round(1) }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </section>
 {% endif %}
 
 <div class="note section">{{ icon('info') }}<p>Не хотите попадать в рейтинги — напишите боту команду /optout в личку.

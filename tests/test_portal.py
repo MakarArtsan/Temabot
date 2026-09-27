@@ -278,6 +278,35 @@ def test_ratings_show_only_public_nominations(world: dict[str, Any]):
     assert world["stats_calls"] and all(c["hide_optout"] is True for c in world["stats_calls"])
 
 
+def members_table(html: str) -> str:
+    return html.split("<h2>Все участники</h2>", 1)[1].split("</table>", 1)[0]
+
+
+def test_members_see_the_whole_table(world: dict[str, Any]):
+    """Решение владельца: участники видят таблицу всех, как внизу рейтинга в админке."""
+    text = client_as(MEMBER).get("/g/1/ratings").text
+    table = members_table(text)
+
+    assert "Петя" in table and "Маша" in table
+    assert table.index("Петя") < table.index("Маша"), "по умолчанию — по пользе"
+    assert "Сообщ." in table and "Помог" in table
+    # столбцы закрытых номинаций («Сова», «Цепляет») остаются владельцу
+    assert "Ночью" not in table and "Ответили" not in table
+    assert "Сова" not in text and "Цепляет" not in text
+
+
+def test_members_table_sorts_only_by_public_columns(world: dict[str, Any]):
+    client = client_as(MEMBER)
+    by_owl = client.get("/g/1/ratings?sort=owl").text     # у Маши ночных больше
+    table = members_table(by_owl)
+    assert table.index("Петя") < table.index("Маша"), "закрытая сортировка — как по пользе"
+    assert 'value="owl"' not in by_owl
+
+    by_activity = client.get("/g/1/ratings?sort=active&period=month").text
+    assert '<option value="active" selected>' in by_activity
+    assert "period=day&amp;sort=active" in by_activity
+
+
 def test_ratings_are_closed_in_digests_mode(world: dict[str, Any]):
     world["portal"] = "digests"
     client = client_as(MEMBER)
