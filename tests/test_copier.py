@@ -315,6 +315,48 @@ async def test_digest_on_mention_is_not_spammed(
     assert "чуть выше" in recorder.replies[1]["text"]
 
 
+async def test_bare_mention_inside_a_forum_topic_shows_the_digest(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    """В теме форума Telegram шлёт сообщение «ответом» на служебное «тема создана»."""
+    groups[GROUP].publish = "auto"
+    topic_root = message("", mention=None, message_id=9, forum_topic_created=object())
+    topic_root.text = None
+    msg = bare_mention()
+    msg.reply_to_message = topic_root
+    msg.is_topic_message = True
+    msg.message_thread_id = 9
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(msg))
+
+    assert "#дайджест" in recorder.replies[0]["text"]
+    assert "нет текста" not in recorder.replies[0]["text"]
+
+
+async def test_topic_root_without_marker_is_not_a_reply(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    groups[GROUP].publish = "auto"
+    topic_root = message("", mention=None, message_id=9)
+    topic_root.text = None
+    msg = bare_mention()
+    msg.reply_to_message = topic_root
+    msg.is_topic_message = True
+    msg.message_thread_id = 9
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(msg))
+    assert "#дайджест" in recorder.replies[0]["text"]
+
+
+async def test_real_reply_inside_a_topic_is_still_copied(no_telegraph, no_db):
+    parent = message("текст соседа", mention=None, message_id=42)
+    msg = message("@temabot", reply_to_message=parent, is_topic_message=True,
+                  message_thread_id=9)
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(msg))
+    assert no_telegraph == ["текст соседа"]
+
+
 async def test_nothing_published_yet_is_explained(
     no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
 ):

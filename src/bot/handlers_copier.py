@@ -142,10 +142,28 @@ async def _send_to_dm(message: types.Message, text: str) -> bool:
     return True
 
 
+def real_reply(message: types.Message) -> types.Message | None:
+    """Сообщение, на которое человек действительно ответил.
+
+    В группе с темами Telegram присылает каждое сообщение темы как «ответ» на
+    служебное «тема создана» — без этого упоминание в теме считалось ответом
+    на сообщение без текста, и бот говорил «копировать нечего».
+    """
+    target = message.reply_to_message
+    if target is None:
+        return None
+    if getattr(target, "forum_topic_created", None) is not None:
+        return None
+    thread_id = getattr(message, "message_thread_id", None)
+    if getattr(message, "is_topic_message", False) and target.message_id == thread_id:
+        return None
+    return target
+
+
 @router.message(MentionsMe())
 async def on_mention(message: types.Message) -> None:
     own_text = _strip_mention(message.text or message.caption or "")
-    target = message.reply_to_message
+    target = real_reply(message)
 
     if own_text:
         text, source_msg = own_text, message
