@@ -5,6 +5,8 @@ src/bot/handlers_copier.py — бот-копировщик, переписанн
 на Telegraph, откуда текст копируется. Добавлено:
   * `@bot` реплаем на чужое сообщение → копируется то сообщение;
   * скопированное из отслеживаемой группы помечается в БД как важное;
+  * упоминание без текста и без ответа — последний дайджест коротким анонсом
+    (только если владелец включил публикацию в группу);
   * кнопка «Что обсуждали вокруг» — сводка нажавшему в личку (любому участнику
     группы, где копировщик разрешён; с лимитом на человека).
 
@@ -150,10 +152,11 @@ async def on_mention(message: types.Message) -> None:
     elif target and (parent_text := target.text or target.caption):
         # моржовое присваивание, чтобы mypy видел: здесь уже не None
         text, source_msg = parent_text, target
+    elif target is not None:
+        await message.reply("В том сообщении нет текста — копировать нечего.")
+        return
     else:
-        await message.reply(
-            "Напиши текст после упоминания или ответь упоминанием на сообщение."
-        )
+        await _reply_with_digest(message)
         return
 
     if cfg.COPY_MODE == "dm":
@@ -199,6 +202,44 @@ async def on_mention(message: types.Message) -> None:
         )
     kb.adjust(1)
     await message.reply("Готово!", reply_markup=kb.as_markup())
+
+
+DIGEST_COOLDOWN_SEC = 600
+_digest_shown: dict[int, float] = {}   # группа -> когда показывали дайджест по запросу
+
+
+async def _reply_with_digest(message: types.Message) -> None:
+    """Упоминание без текста и без ответа на сообщение — последний дайджест группы."""
+    hint = ("Напиши текст после упоминания — скопирую его, или ответь упоминанием "
+            "на сообщение — скопирую то сообщение.")
+    group = None
+    if getattr(message.chat, "type", "") != "private":
+        group = await settings_cache.chat(message.chat.id)
+    if group is None or group.publish == "off":
+        await message.reply(hint)
+        return
+
+    # не больше раза в 10 минут на группу: иначе упоминаниями можно засыпать чат
+    now = time.monotonic()
+    shown = _digest_shown.get(group.tg_id)
+    if shown is not None and now - shown < DIGEST_COOLDOWN_SEC:
+        await message.reply("Дайджест только что был — чуть выше ↑")
+        return
+    try:
+        from src.digest.publish import digest_on_request
+
+        post = await digest_on_request(group)
+    except Exception:
+        log.exception("Дайджест по запросу не собрался")
+        post = ""
+    if not post:
+        await message.reply(f"Опубликованных дайджестов пока нет. {hint}")
+        return
+    _digest_shown[group.tg_id] = now
+    await message.reply(
+        post, parse_mode="HTML",
+        link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+    )
 
 
 AROUND_CACHE_SEC = 3600

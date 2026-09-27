@@ -461,7 +461,7 @@ def teaser_html(data: DigestData, url: str, number: int | None = None) -> str:
     headline = str(article.get("headline") or "") or _join_ru([t.title for t in ordered[:3]])
     headline = headline or f"Дайджест за {data.day:%d.%m}"
     title = f"Выпуск #{number}: {headline}" if number else headline
-    lines = [f"<b>{_html_link(title, url)}</b>"]
+    lines = [f"<b>{_html_link(title, url) if url else esc_html(title)}</b>"]
 
     if article:
         body = str(article.get("post") or article.get("lead") or "").strip()
@@ -474,5 +474,7 @@ def teaser_html(data: DigestData, url: str, number: int | None = None) -> str:
         body = (body + " " if body else "") + f"Плюс {_join_ru(also)}."
     if body:
         lines += ["", esc_html(body)]
-    lines += ["", _html_link("Читать выпуск на сайте →", url), "", HASHTAG]
+    if url:   # без сайта для участников — только анонс, без ссылки в никуда
+        lines += ["", _html_link("Читать выпуск на сайте →", url)]
+    lines += ["", HASHTAG]
     return "\n".join(lines)

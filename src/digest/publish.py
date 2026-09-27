@@ -157,6 +157,33 @@ def group_parts(
     return digest_messages(data)
 
 
+async def digest_on_request(chat: Chat) -> str:
+    """Последний дайджест — по упоминанию бота без текста (решение владельца).
+
+    Это тоже публикация в группу, поэтому только там, где владелец её включил.
+    В режиме «по кнопке» — последний опубликованный: непроверенный владельцем
+    выпуск по запросу участника в группу не уходит. Всегда коротким анонсом.
+    "" — показать нечего.
+    """
+    if chat.publish == "off":
+        return ""
+    for digest in await repo.list_chat_digests(chat.id, limit=30):
+        if chat.publish == "manual" and digest.published_at is None:
+            continue
+        if not digest.payload:
+            continue
+        data = DigestData.from_dict(digest.payload).titled(chat.title)
+        if is_empty(data):
+            continue
+        url = article_url(chat, data.day, await site_base())
+        try:
+            number: int | None = await repo.digest_issue_number(chat.id, data.day)
+        except Exception:
+            number = None
+        return teaser_html(data, url, number)
+    return ""
+
+
 async def group_preview(digest_payload: dict[str, Any], chat: Chat) -> list[str]:
     """Как дайджест будет выглядеть в группе — для предпросмотра в админке."""
     if not digest_payload:

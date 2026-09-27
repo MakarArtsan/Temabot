@@ -205,13 +205,125 @@ async def test_mention_without_text_and_without_reply_explains(no_telegraph, no_
     assert "ответь упоминанием" in recorder.replies[0]["text"]
 
 
-async def test_reply_to_media_without_caption_explains(no_telegraph, no_db):
+async def test_reply_to_media_without_caption_explains(
+    no_telegraph, no_db, groups: dict[int, Chat],
+):
+    """Ответ на фото без подписи — это попытка скопировать, а не запрос дайджеста."""
+    groups[GROUP].publish = "auto"
     parent = message("", mention=None, message_id=42)
     parent.text = None
     recorder = Recorder()
     await copier.on_mention(recorder.attach(message("@temabot", reply_to_message=parent)))
 
     assert no_telegraph == []
+    assert "нет текста" in recorder.replies[0]["text"]
+
+
+# ------------------------------------------- упоминание без текста — дайджест
+
+@pytest.fixture
+def digests(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Архив группы: свежий неопубликованный и опубликованный вчерашний."""
+    from src.db.models import Digest
+    from src.digest import publish
+    from src.digest.render import DigestData, Topic
+
+    def payload(day: Any, title: str) -> dict[str, Any]:
+        return DigestData(
+            chat_tg_id=GROUP, day=day, chat_title="Группа",
+            highlights=[f"Главное: {title}"],
+            topics=[Topic(thread_id=11, title=title, kind="insight", msg_count=9,
+                          key_msg_ids=[5])],
+            msg_count=50, participants=5,
+        ).to_dict()
+
+    from datetime import date
+    archive = [
+        Digest(id=2, chat_id=1, day=date(2026, 9, 27), summary_md="",
+               payload=payload(date(2026, 9, 27), "Свежая тема")),
+        Digest(id=1, chat_id=1, day=date(2026, 9, 26), summary_md="",
+               payload=payload(date(2026, 9, 26), "Вчерашняя тема"), published_at=NOW),
+    ]
+
+    async def list_chat_digests(chat_id: int, limit: int = 60) -> list[Any]:
+        return archive
+
+    async def site_base() -> str:
+        return "https://site.example.com"
+
+    async def issue_number(chat_id: int, day: Any) -> int:
+        return 1 if day.day == 26 else 2
+
+    monkeypatch.setattr(publish.repo, "list_chat_digests", list_chat_digests)
+    monkeypatch.setattr(publish.repo, "digest_issue_number", issue_number)
+    monkeypatch.setattr(publish, "site_base", site_base)
+    copier._digest_shown.clear()
+    return archive
+
+
+def bare_mention() -> SimpleNamespace:
+    return message("@temabot", chat=SimpleNamespace(id=GROUP, type="supergroup"),
+                   from_user=SimpleNamespace(id=STRANGER, full_name="Участник"))
+
+
+async def test_bare_mention_shows_the_last_published_digest(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    """«По кнопке»: непроверенный владельцем выпуск по запросу в группу не уходит."""
+    groups[GROUP].publish = "manual"
+    groups[GROUP].portal = "all"
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(bare_mention()))
+
+    reply = recorder.replies[0]
+    assert "Выпуск #1: Вчерашняя тема" in reply["text"] and "Свежая тема" not in reply["text"]
+    assert "#дайджест" in reply["text"] and reply["parse_mode"] == "HTML"
+    assert "https://site.example.com/g/1/d/2026-09-26" in reply["text"]
+    assert no_telegraph == [], "ничего не копируем"
+
+
+async def test_bare_mention_in_auto_mode_shows_the_newest(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    groups[GROUP].publish = "auto"
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(bare_mention()))
+    text = recorder.replies[0]["text"]
+    assert "Свежая тема" in text
+    # страница участников закрыта — анонс без ссылки в никуда
+    assert "site.example.com" not in text and "#дайджест" in text
+
+
+async def test_no_digest_where_publishing_is_off(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    groups[GROUP].publish = "off"
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(bare_mention()))
+    assert "ответь упоминанием" in recorder.replies[0]["text"]
+    assert "#дайджест" not in recorder.replies[0]["text"]
+
+
+async def test_digest_on_mention_is_not_spammed(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    groups[GROUP].publish = "auto"
+    recorder = Recorder()
+    for _ in range(3):
+        await copier.on_mention(recorder.attach(bare_mention()))
+    assert ["#дайджест" in r["text"] for r in recorder.replies] == [True, False, False]
+    assert "чуть выше" in recorder.replies[1]["text"]
+
+
+async def test_nothing_published_yet_is_explained(
+    no_telegraph, no_db, digests: list[Any], groups: dict[int, Chat],
+):
+    groups[GROUP].publish = "manual"
+    for d in digests:
+        d.published_at = None
+    recorder = Recorder()
+    await copier.on_mention(recorder.attach(bare_mention()))
+    assert "Опубликованных дайджестов пока нет" in recorder.replies[0]["text"]
 
 
 async def test_telegraph_failure_does_not_crash(monkeypatch: pytest.MonkeyPatch, no_db):
