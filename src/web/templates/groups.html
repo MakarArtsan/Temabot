@@ -4,7 +4,7 @@
 {% block h1 %}Группы{% endblock %}
 {% block lead %}<p class="lead">Что бот делает в каждой группе. Изменения работают сразу — бот и сборщик перечитывают настройки раз в минуту.</p>{% endblock %}
 {% block content %}
-{% for chat in chats %}{% include "_group_row.html" %}{% else %}
+{% for chat in chats %}{% set topics = topics_by_chat.get(chat.id, []) %}{% include "_group_row.html" %}{% else %}
   <div class="card">{{ empty('Групп пока нет', 'Они появятся, когда сборщик увидит чат или бота добавят в группу. Новая группа появляется выключенной.', 'groups') }}</div>
 {% endfor %}
 <div class="note">{{ icon('info') }}<p>Дайджест группы публикуется только в неё же, а страница участников пускает

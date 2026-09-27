@@ -190,6 +190,10 @@ create table if not exists author_stats_daily (
 -- Колонка появилась после первой версии схемы — добираем на существующих базах.
 alter table author_stats_daily add column if not exists short_msgs int default 0;
 
+-- Боты в группе (наш и чужие): их сообщения не идут ни в дайджест, ни в рейтинги,
+-- ни в поиск. Отметку ставит коллектор по профилю отправителя.
+alter table authors add column if not exists is_bot boolean default false;
+
 create table if not exists state (key text primary key, value jsonb);  -- last_msg_id и пр.
 
 -- Публикация дайджеста в саму группу (решение владельца, см. TZ §9):

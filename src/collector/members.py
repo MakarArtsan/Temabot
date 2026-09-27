@@ -75,12 +75,19 @@ async def sync_members(client: Any, chat: Chat) -> int | None:
 
 async def sync_loop(client: Any, chats: list[Chat], every_sec: float = SYNC_EVERY_SEC) -> None:
     """Сверять участников всех групп раз в несколько часов. Ошибки не роняют коллектор."""
+    from src.collector.topics import sync_topics
+
     while True:
         for chat in chats:
             try:
                 await sync_members(client, chat)
             except Exception:
                 log.exception("Сверка участников %s упала", chat.tg_id)
+            try:
+                # темы форума — чтобы владелец выбрал, куда публиковать дайджест
+                await sync_topics(client, chat)
+            except Exception:
+                log.warning("Темы группы %s не прочитались", chat.tg_id, exc_info=True)
         await asyncio.sleep(every_sec)
 
 

@@ -365,9 +365,29 @@ async def dashboard(request: Request, _: dict = Depends(auth.require_owner)) -> 
 
 @app.get("/groups", response_class=HTMLResponse)
 async def groups_page(request: Request, _: dict = Depends(auth.require_owner)) -> HTMLResponse:
+    chats = await repo.list_chats()
     return render(
-        request, "groups.html", {"active": "groups", "chats": await repo.list_chats()}
+        request, "groups.html",
+        {"active": "groups", "chats": chats, "topics_by_chat": await forum_topics(chats)},
     )
+
+
+async def forum_topics(chats: list[Chat]) -> dict[int, list[dict[str, Any]]]:
+    """Темы форума каждой группы (их кладёт коллектор) — для выбора, куда публиковать."""
+    from src.collector.topics import GENERAL_TOPIC_ID, STATE_PREFIX
+
+    try:
+        states = await repo.get_states(STATE_PREFIX)
+    except Exception:
+        log.warning("Темы групп не прочитались", exc_info=True)
+        return {}
+    result: dict[int, list[dict[str, Any]]] = {}
+    for chat in chats:
+        topics = list(((states.get(f"{STATE_PREFIX}{chat.id}") or {}).get("topics")) or [])
+        if topics and not any(t.get("id") == GENERAL_TOPIC_ID for t in topics):
+            topics.insert(0, {"id": GENERAL_TOPIC_ID, "title": "General", "closed": False})
+        result[chat.id] = topics
+    return result
 
 
 @app.post("/groups/{chat_tg_id}", response_class=HTMLResponse)
@@ -411,6 +431,15 @@ async def groups_update(
         if current is None:
             raise HTTPException(404, "Группа не найдена")
         await repo.update_chat_settings(current.id, {"publish_format": value})
+    elif field == "publish_topic":
+        # тема форума, куда бот публикует дайджест и рейтинг; 1 — «Общая»
+        current = await repo.get_chat_by_tg_id(chat_tg_id)
+        if current is None:
+            raise HTTPException(404, "Группа не найдена")
+        known = {int(t["id"]) for t in (await forum_topics([current])).get(current.id, [])}
+        if not value.isdigit() or int(value) not in known:
+            raise HTTPException(400, "Такой темы в группе нет")
+        await repo.update_chat_settings(current.id, {"publish_topic": int(value)})
     elif field == "ratings_publish":
         current = await repo.get_chat_by_tg_id(chat_tg_id)
         if current is None:
@@ -427,7 +456,8 @@ async def groups_update(
     settings_cache.forget(chat_tg_id)
 
     chat = await repo.get_chat_by_tg_id(chat_tg_id)
-    return render(request, "_group_row.html", {"chat": chat})
+    topics = (await forum_topics([chat])).get(chat.id, []) if chat else []
+    return render(request, "_group_row.html", {"chat": chat, "topics": topics})
 
 
 # -------------------------------------------------------------------- отбор

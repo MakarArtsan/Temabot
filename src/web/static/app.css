@@ -578,14 +578,31 @@ details.more[open] > summary { margin-bottom: 10px; }
 .lead-text { font-size: 18px; line-height: 1.5; color: var(--ink-2); margin: 12px 0 0; }
 .issue-box h2 { margin-bottom: 10px; }
 .issue-section { margin: 32px 0 6px; font-size: 20px; }
-.story { padding: 22px 0; border-top: 1px solid var(--line); }
-.story h2 {
-  font-family: Georgia, "Times New Roman", serif; font-size: 24px; line-height: 1.2;
-  font-weight: 700; margin: 0 0 10px;
+.issue-hint { margin: 18px 0 4px; }
+/* новости — аккордеон: открыта одна, по ссылке из поста в группе — нужная */
+.story { border-top: 1px solid var(--line); scroll-margin-top: 72px; }
+.story > summary {
+  list-style: none; cursor: pointer; display: flex; gap: 12px; align-items: flex-start;
+  padding: 18px 0; -webkit-tap-highlight-color: transparent;
 }
-.story .hook { font-size: 17px; font-weight: 560; color: var(--ink); }
+.story > summary::-webkit-details-marker { display: none; }
+.story > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.story-head { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.story-head .kicker { margin: 0; }
+.story-title {
+  font-family: Georgia, "Times New Roman", serif; font-size: 22px; line-height: 1.22;
+  font-weight: 700; color: var(--ink);
+}
+@media (min-width: 720px) { .story-title { font-size: 24px; } }
+.story .hook { font-size: 16px; line-height: 1.5; font-weight: 520; color: var(--ink-2); }
+.story-chevron { flex: none; margin-top: 6px; color: var(--muted); transform: rotate(90deg);
+                 transition: transform .18s ease; }
+.story[open] .story-chevron { transform: rotate(-90deg); }
+.story-body { padding: 0 0 20px; }
+.story-body > p:first-child { margin-top: 0; }
 .story p { font-size: 16px; line-height: 1.65; }
 .story .sides { display: flex; flex-direction: column; gap: 4px; font-size: 14.5px;
                 color: var(--ink-2); border-left: 3px solid var(--accent); padding-left: 12px; }
 .story .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 13px; }
 .story .meta span { display: inline-flex; align-items: center; gap: 5px; }
+@media (prefers-reduced-motion: reduce) { .story-chevron { transition: none; } }

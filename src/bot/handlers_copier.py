@@ -5,7 +5,8 @@ src/bot/handlers_copier.py — бот-копировщик, переписанн
 на Telegraph, откуда текст копируется. Добавлено:
   * `@bot` реплаем на чужое сообщение → копируется то сообщение;
   * скопированное из отслеживаемой группы помечается в БД как важное;
-  * кнопка «Что обсуждали вокруг» (только для владельца, ответ в личку).
+  * кнопка «Что обсуждали вокруг» — сводка нажавшему в личку (любому участнику
+    группы, где копировщик разрешён; с лимитом на человека).
 
 Подключение в src/bot/main.py:
     from src.bot import handlers_copier as copier
@@ -19,6 +20,7 @@ import asyncio
 import html
 import logging
 import re
+import time
 
 from aiogram import Bot, Router, types
 from aiogram.exceptions import TelegramForbiddenError
@@ -27,6 +29,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telegraph import Telegraph
 
+from src.bot.middlewares import RateLimit, settings_cache
 from src.config import cfg
 from src.db import repo
 from src.rag.answer import answer_about_thread
@@ -167,7 +170,8 @@ async def on_mention(message: types.Message) -> None:
         await message.reply("Упс, что-то пошло не так. Попробуйте ещё раз.")
         return
 
-    tracked = source_msg.chat.id == cfg.TG_GROUP_ID
+    group = await settings_cache.chat(source_msg.chat.id)
+    tracked = group is not None and group.collect
     if tracked:
         try:
             await repo.mark_copied(
@@ -184,10 +188,9 @@ async def on_mention(message: types.Message) -> None:
 
     kb = InlineKeyboardBuilder()
     kb.button(text="📄 Копировать текст", url=url)
-    # Кнопка работает только у владельца, поэтому и показываем её только ему:
-    # остальным участникам она лишь сообщала бы, что бот следит за чатом.
-    asked_by_owner = message.from_user is not None and message.from_user.id == cfg.OWNER_ID
-    if tracked and asked_by_owner:
+    # Сводка приходит нажавшему в личку — любому участнику группы (решение
+    # владельца): группа и так видит это обсуждение, бот лишь пересказывает его.
+    if tracked:
         kb.button(
             text="🧵 Что обсуждали вокруг",
             callback_data=AroundCb(
@@ -198,26 +201,73 @@ async def on_mention(message: types.Message) -> None:
     await message.reply("Готово!", reply_markup=kb.as_markup())
 
 
+AROUND_CACHE_SEC = 3600
+around_limit = RateLimit(limit=3, window_sec=600.0)   # на участника: модель не бесплатная
+_around_cache: dict[tuple[int, int], tuple[float, str]] = {}
+
+
+async def around_summary(chat_tg_id: int, msg_id: int) -> str:
+    """Сводка «что обсуждали вокруг». Час помним: жмут обычно несколько человек подряд."""
+    now = time.monotonic()
+    cached = _around_cache.get((chat_tg_id, msg_id))
+    if cached and now - cached[0] < AROUND_CACHE_SEC:
+        return cached[1]
+    summary = await answer_about_thread(chat_tg_id, msg_id)
+    _around_cache[(chat_tg_id, msg_id)] = (now, summary)
+    for key, (at, _) in list(_around_cache.items()):
+        if now - at > AROUND_CACHE_SEC:
+            _around_cache.pop(key, None)
+    return summary
+
+
+async def around_allowed(chat_tg_id: int, user_id: int) -> bool:
+    """Кнопку в группе может нажать любой её участник — если группа это разрешает."""
+    if user_id == cfg.OWNER_ID:
+        return True
+    if user_id in await settings_cache.blocked():
+        return False
+    group = await settings_cache.chat(chat_tg_id)
+    return bool(group and group.collect and group.copier == "allow")
+
+
 @router.callback_query(AroundCb.filter())
 async def on_around(
     cb: types.CallbackQuery, callback_data: AroundCb, bot: Bot
 ) -> None:
-    if cb.from_user.id != cfg.OWNER_ID:
-        await cb.answer("Доступно только владельцу", show_alert=True)
+    user_id = cb.from_user.id
+    if not await around_allowed(callback_data.chat_id, user_id):
+        await cb.answer("В этой группе сводки выключены", show_alert=True)
+        return
+    if user_id != cfg.OWNER_ID and not around_limit.allow(user_id):
+        await cb.answer("Слишком часто — попробуйте через несколько минут", show_alert=True)
         return
 
-    await cb.answer("Собираю контекст, пришлю в личку")
+    # Сначала — можем ли вообще написать в личку: иначе человек ждал бы впустую
     try:
-        summary_html = await answer_about_thread(
-            callback_data.chat_id, callback_data.msg_id
+        await bot.send_message(user_id, "🧵 Собираю, что обсуждали вокруг…")
+    except TelegramForbiddenError:
+        await cb.answer(
+            "Сначала откройте личку со мной и нажмите «Старт», потом — кнопку ещё раз",
+            show_alert=True,
         )
+        return
+    except Exception:
+        log.exception("Не удалось написать %s в личку", user_id)
+        await cb.answer("Не получилось, попробуйте позже", show_alert=True)
+        return
+
+    await cb.answer("Пришлю в личку")
+    try:
+        summary_html = await around_summary(callback_data.chat_id, callback_data.msg_id)
+    except Exception:
+        log.exception("answer_about_thread упал")
+        summary_html = "Не получилось собрать обсуждение — попробуйте позже."
+    try:
         await bot.send_message(
-            cfg.OWNER_ID,
+            user_id,
             summary_html,
             parse_mode="HTML",
             link_preview_options=types.LinkPreviewOptions(is_disabled=True),
         )
-    except TelegramForbiddenError:
-        log.warning("Владелец не нажал /start в личке бота — ответ не доставлен")
     except Exception:
-        log.exception("answer_about_thread упал")
+        log.exception("Сводку не удалось отправить %s", user_id)

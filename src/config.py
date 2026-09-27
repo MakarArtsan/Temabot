@@ -152,6 +152,12 @@ class Settings(BaseSettings):
         return extra
 
     @property
+    def bot_id(self) -> int | None:
+        """id нашего бота — это число перед двоеточием в токене."""
+        head = self.BOT_TOKEN.split(":", 1)[0]
+        return int(head) if head.isdigit() else None
+
+    @property
     def embed_base_url(self) -> str:
         return self.EMBED_BASE_URL or self.LLM_BASE_URL
 

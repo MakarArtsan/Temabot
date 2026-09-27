@@ -419,7 +419,8 @@ async def build_digest(
     now: datetime | None = None,
 ) -> DigestResult:
     """Собрать дайджест за день. В БД ничего не пишет — этим занимается run()."""
-    messages = await repo.get_messages_by_day(chat.id, day)
+    # сообщения ботов (наш «Готово!», чужие боты) — не обсуждение людей
+    messages = await repo.get_messages_by_day(chat.id, day, exclude_bots=True)
     meaningful, noise = split_noise(messages)
     threads = segment(meaningful)
 

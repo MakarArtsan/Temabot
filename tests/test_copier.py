@@ -6,8 +6,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiogram.exceptions import TelegramForbiddenError
 from src.bot import handlers_copier as copier
 from src.bot.main import build_dispatcher
+from src.bot.middlewares import RateLimit
+from src.db.models import Chat
 
 OWNER = 132036441
 STRANGER = 999999
@@ -127,6 +130,26 @@ def no_telegraph(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return pages
 
 
+@pytest.fixture(autouse=True)
+def groups(monkeypatch: pytest.MonkeyPatch) -> dict[int, Chat]:
+    """Настройки групп вместо базы: GROUP читается сборщиком, копировщик разрешён."""
+    known = {GROUP: Chat(id=1, tg_id=GROUP, title="Группа", collect=True, copier="allow")}
+    blocked: set[int] = set()
+
+    async def chat(chat_tg_id: int, **kw: Any) -> Chat | None:
+        return known.get(chat_tg_id)
+
+    async def blocked_ids(**kw: Any) -> set[int]:
+        return blocked
+
+    monkeypatch.setattr(copier.settings_cache, "chat", chat)
+    monkeypatch.setattr(copier.settings_cache, "blocked", blocked_ids)
+    monkeypatch.setattr(copier.cfg, "OWNER_ID", OWNER)
+    monkeypatch.setattr(copier, "around_limit", RateLimit(limit=3, window_sec=600.0))
+    copier._around_cache.clear()
+    return known
+
+
 @pytest.fixture
 def no_db(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
@@ -136,8 +159,6 @@ def no_db(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         return True
 
     monkeypatch.setattr(copier.repo, "mark_copied", mark_copied)
-    monkeypatch.setattr(copier.cfg, "TG_GROUP_ID", GROUP)
-    monkeypatch.setattr(copier.cfg, "OWNER_ID", OWNER)
     return calls
 
 
@@ -213,7 +234,6 @@ async def test_database_failure_does_not_break_copying(
         raise RuntimeError("база недоступна")
 
     monkeypatch.setattr(copier.repo, "mark_copied", broken)
-    monkeypatch.setattr(copier.cfg, "TG_GROUP_ID", GROUP)
     recorder = Recorder()
 
     await copier.on_mention(recorder.attach(message("@temabot текст")))
@@ -244,44 +264,99 @@ class FakeCallback:
 
 
 class FakeBot:
-    def __init__(self) -> None:
+    def __init__(self, *, dm_closed: bool = False) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.dm_closed = dm_closed
 
     async def send_message(self, chat_id: int, text: str, **kw: Any) -> None:
+        if self.dm_closed:
+            raise TelegramForbiddenError(method=None, message="bot can't initiate conversation")  # type: ignore[arg-type]
         self.sent.append({"chat_id": chat_id, "text": text, **kw})
 
 
-async def test_stranger_cannot_open_the_thread(monkeypatch: pytest.MonkeyPatch):
-    """Содержимое закрытой группы не должно уходить никому, кроме владельца (§9)."""
-    async def must_not_run(*a: Any, **kw: Any) -> str:
-        raise AssertionError("чужой не должен добраться до контекста")
+def summary_counter(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    calls: list[tuple[int, int]] = []
 
-    monkeypatch.setattr(copier, "answer_about_thread", must_not_run)
-    monkeypatch.setattr(copier.cfg, "OWNER_ID", OWNER)
+    async def summary(chat_tg_id: int, tg_msg_id: int) -> str:
+        calls.append((chat_tg_id, tg_msg_id))
+        return "<b>Вокруг сообщения</b>\nкраткий пересказ"
 
+    monkeypatch.setattr(copier, "answer_about_thread", summary)
+    return calls
+
+
+async def test_member_gets_the_summary_in_private(monkeypatch: pytest.MonkeyPatch):
+    """Решение владельца: сводку получает любой участник группы — себе в личку."""
+    summary_counter(monkeypatch)
+    callback = FakeCallback(STRANGER)
+    bot = FakeBot()
+    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=5), bot)
+
+    assert [m["chat_id"] for m in bot.sent] == [STRANGER, STRANGER], "в личку, не в группу"
+    assert "краткий пересказ" in bot.sent[-1]["text"]
+    assert callback.answers[0]["text"] == "Пришлю в личку"
+
+
+async def test_owner_gets_the_summary_in_private(monkeypatch: pytest.MonkeyPatch):
+    summary_counter(monkeypatch)
+    callback = FakeCallback(OWNER)
+    bot = FakeBot()
+    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=5), bot)
+    assert bot.sent[-1]["chat_id"] == OWNER and "краткий пересказ" in bot.sent[-1]["text"]
+
+
+async def test_group_without_copier_gives_nothing(
+    monkeypatch: pytest.MonkeyPatch, groups: dict[int, Chat],
+):
+    calls = summary_counter(monkeypatch)
+    groups[GROUP].copier = "deny"
     callback = FakeCallback(STRANGER)
     bot = FakeBot()
     await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=1), bot)
 
     assert callback.answers[0]["show_alert"] is True
-    assert "владельцу" in callback.answers[0]["text"]
-    assert bot.sent == [], "в группу и в личку ничего не ушло"
+    assert bot.sent == [] and calls == []
 
 
-async def test_owner_gets_the_summary_in_private(monkeypatch: pytest.MonkeyPatch):
-    async def summary(chat_tg_id: int, tg_msg_id: int) -> str:
-        return "<b>Вокруг сообщения</b>\nкраткий пересказ"
+async def test_unknown_group_gives_nothing(monkeypatch: pytest.MonkeyPatch):
+    calls = summary_counter(monkeypatch)
+    callback = FakeCallback(STRANGER)
+    await copier.on_around(callback, copier.AroundCb(chat_id=-100999, msg_id=1), FakeBot())
+    assert callback.answers[0]["show_alert"] is True and calls == []
 
-    monkeypatch.setattr(copier, "answer_about_thread", summary)
-    monkeypatch.setattr(copier.cfg, "OWNER_ID", OWNER)
 
-    callback = FakeCallback(OWNER)
+async def test_closed_private_chat_asks_to_press_start(monkeypatch: pytest.MonkeyPatch):
+    """Бот не может написать первым — человек узнаёт, что делать, а модель не зовём."""
+    calls = summary_counter(monkeypatch)
+    callback = FakeCallback(STRANGER)
+    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=1),
+                           FakeBot(dm_closed=True))
+
+    assert callback.answers[0]["show_alert"] is True
+    assert "Старт" in callback.answers[0]["text"]
+    assert calls == []
+
+
+async def test_members_are_rate_limited_and_share_one_summary(monkeypatch: pytest.MonkeyPatch):
+    calls = summary_counter(monkeypatch)
     bot = FakeBot()
-    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=5), bot)
+    for _ in range(4):
+        callback = FakeCallback(STRANGER)
+        await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=7), bot)
+    assert "Слишком часто" in callback.answers[0]["text"]
+    assert calls == [(GROUP, 7)], "одна сводка на сообщение, дальше — из памяти"
 
-    assert bot.sent[0]["chat_id"] == OWNER, "ответ уходит в личку, а не в группу"
-    assert "краткий пересказ" in bot.sent[0]["text"]
-    assert callback.answers[0]["text"] == "Собираю контекст, пришлю в личку"
+
+async def test_blocked_user_gives_nothing(monkeypatch: pytest.MonkeyPatch):
+    calls = summary_counter(monkeypatch)
+
+    async def blocked(**kw: Any) -> set[int]:
+        return {STRANGER}
+
+    monkeypatch.setattr(copier.settings_cache, "blocked", blocked)
+    callback = FakeCallback(STRANGER)
+    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=1), FakeBot())
+    assert callback.answers[0]["show_alert"] is True and calls == []
 
 
 async def test_summary_failure_does_not_crash(monkeypatch: pytest.MonkeyPatch):
@@ -289,12 +364,12 @@ async def test_summary_failure_does_not_crash(monkeypatch: pytest.MonkeyPatch):
         raise RuntimeError("модель недоступна")
 
     monkeypatch.setattr(copier, "answer_about_thread", broken)
-    monkeypatch.setattr(copier.cfg, "OWNER_ID", OWNER)
-
     callback = FakeCallback(OWNER)
-    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=5), FakeBot())
+    bot = FakeBot()
+    await copier.on_around(callback, copier.AroundCb(chat_id=GROUP, msg_id=5), bot)
 
     assert callback.answers, "пользователю всё равно ответили"
+    assert "Не получилось" in bot.sent[-1]["text"]
 
 
 # ------------------------------------------------------------- порядок роутеров
@@ -316,13 +391,13 @@ def test_copier_is_public_but_gated_by_access_rules():
     assert "CopierRateLimit" in kinds
 
 
-# ------------------------------------------------ кнопка только владельцу
+# ----------------------------------------------- кнопка «вокруг» — участникам
 
-async def test_thread_button_is_hidden_from_other_members(no_telegraph, no_db):
-    """Кнопка работает только у владельца — остальным её и показывать незачем."""
+async def test_members_see_the_thread_button(no_telegraph, no_db):
+    """Решение владельца: сводку может попросить любой участник группы."""
     recorder = Recorder()
     msg = recorder.attach(message(
-        "@temabot текст", from_user=SimpleNamespace(id=STRANGER, full_name="Чужой")
+        "@temabot текст", from_user=SimpleNamespace(id=STRANGER, full_name="Участник")
     ))
 
     await copier.on_mention(msg)
@@ -330,17 +405,19 @@ async def test_thread_button_is_hidden_from_other_members(no_telegraph, no_db):
     buttons = [
         b.text for row in recorder.replies[0]["reply_markup"].inline_keyboard for b in row
     ]
-    assert buttons == ["📄 Копировать текст"]
+    assert buttons == ["📄 Копировать текст", "🧵 Что обсуждали вокруг"]
 
 
-async def test_owner_still_sees_the_thread_button(no_telegraph, no_db):
+async def test_untracked_group_has_no_thread_button(no_telegraph, no_db):
     recorder = Recorder()
-    await copier.on_mention(recorder.attach(message("@temabot текст")))
+    await copier.on_mention(recorder.attach(
+        message("@temabot текст", chat=SimpleNamespace(id=-100999))
+    ))
 
     buttons = [
         b.text for row in recorder.replies[0]["reply_markup"].inline_keyboard for b in row
     ]
-    assert "🧵 Что обсуждали вокруг" in buttons
+    assert buttons == ["📄 Копировать текст"], "сводку делать не из чего"
 
 
 # ------------------------------------------------------------- режим dm

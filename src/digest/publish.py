@@ -55,6 +55,37 @@ def ratings_are_public(chat: Chat) -> bool:
 PUBLISH_FORMATS = {"short": "коротко со ссылкой", "full": "целиком"}
 
 
+def publish_topic(chat: Chat) -> int | None:
+    """В какую тему форума публиковать. None — в «Общую» (или в группу без тем)."""
+    try:
+        topic = int((chat.settings or {}).get("publish_topic") or 0)
+    except (TypeError, ValueError):
+        return None
+    # у «Общей» (id 1) в Bot API нет message_thread_id — туда шлют без него
+    return topic if topic > 1 else None
+
+
+TELEGRAM_ERRORS = {
+    "TOPIC_CLOSED": "в группе включены темы, а тема, куда шлёт бот, закрыта. Выберите "
+                    "в «Группах» открытую тему для публикации или откройте её в Telegram",
+    "TOPIC_DELETED": "тема для публикации удалена — выберите другую в «Группах»",
+    "message thread not found": "тема для публикации не найдена — выберите другую в «Группах»",
+    "not enough rights": "у бота нет права писать в группе — дайте ему его в настройках группы",
+    "CHAT_WRITE_FORBIDDEN": "у бота нет права писать в группе — дайте ему его в настройках группы",
+    "bot was kicked": "бота удалили из группы — добавьте его обратно",
+    "chat not found": "бот не состоит в группе — добавьте его",
+}
+
+
+def explain_telegram_error(exc: Exception) -> str:
+    """Ответ Telegram — человеческими словами, если причина известна."""
+    text = str(exc)
+    for marker, human in TELEGRAM_ERRORS.items():
+        if marker.lower() in text.lower():
+            return human
+    return text
+
+
 def article_url(chat: Chat, day: Any) -> str:
     """Ссылка на выпуск-статью на сайте — или "", если короткий пост не годится.
 
@@ -71,11 +102,11 @@ def article_url(chat: Chat, day: Any) -> str:
 def group_parts(data: DigestData, *, ratings_public: bool, url: str = "") -> list[str]:
     """Текст для группы.
 
-    Со ссылкой на выпуск — короткий пост: заголовок, крючки, ссылка, #дайджест.
+    Со ссылкой на выпуск — короткий пост: заголовок, новости ссылками, #дайджест.
     Без неё — весь дайджест одним сообщением (длинный — несколькими), темы
     свёрнуты под раскрывающиеся цитаты. Кнопок оценки в группе нет.
     """
-    if url and data.article:
+    if url:
         return [teaser_html(data, url)]
     if data.heroes and not ratings_public:
         data = dataclasses.replace(data, heroes="")
@@ -142,6 +173,7 @@ async def publish_digest(bot: Any, digest_id: int, *, auto: bool = False) -> Pub
                 link_preview_options={"is_disabled": True},
                 # дайджест приходит поздно вечером — без звука у всех участников
                 disable_notification=True,
+                message_thread_id=publish_topic(chat),
             )
             sent.append(int(message.message_id))
     except Exception as exc:
@@ -150,11 +182,12 @@ async def publish_digest(bot: Any, digest_id: int, *, auto: bool = False) -> Pub
             # начало уже в группе: отметку оставляем, иначе повтор задублирует его
             await repo.finish_digest_publication(digest_id, sent)
             return PublishResult(
-                False, f"Опубликован не полностью: {exc}", message_ids=sent,
+                False, f"Опубликован не полностью: {explain_telegram_error(exc)}",
+                message_ids=sent,
                 link=deeplink(chat.tg_id, sent[0]),
             )
         await repo.release_digest_publication(digest_id)
-        return PublishResult(False, f"Telegram не принял сообщение: {exc}")
+        return PublishResult(False, f"Telegram не принял сообщение: {explain_telegram_error(exc)}")
 
     await repo.finish_digest_publication(digest_id, sent)
     log.info("Дайджест %s опубликован в группе %s", digest_id, chat.tg_id)

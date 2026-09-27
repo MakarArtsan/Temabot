@@ -341,18 +341,20 @@ async def list_author_weights() -> dict[str, Any]:
     }
 
 
-async def upsert_author(tg_user_id: int, name: str | None) -> Author:
+async def upsert_author(tg_user_id: int, name: str | None, *, is_bot: bool = False) -> Author:
     row = await pool.fetchrow(
         """
-        insert into authors (tg_user_id, name)
-        values ($1, $2)
+        insert into authors (tg_user_id, name, is_bot)
+        values ($1, $2, $3)
         on conflict (tg_user_id) do update
             set name = coalesce(excluded.name, authors.name),
+                is_bot = authors.is_bot or excluded.is_bot,
                 updated_at = now()
         returning *
         """,
         tg_user_id,
         name,
+        is_bot,
     )
     assert row is not None
     return Author.from_row(row)
@@ -554,21 +556,36 @@ async def set_thread_id(chat_id: int, tg_msg_ids: list[int], thread_id: int) -> 
 
 
 async def get_messages_by_day(
-    chat_id: int, day: date_type, *, tz: str | None = None, include_deleted: bool = True
+    chat_id: int,
+    day: date_type,
+    *,
+    tz: str | None = None,
+    include_deleted: bool = True,
+    exclude_bots: bool = False,
 ) -> list[Message]:
-    """Сообщения за локальные сутки. Удалённые по умолчанию включены (TZ §4.1)."""
+    """Сообщения за локальные сутки. Удалённые по умолчанию включены (TZ §4.1).
+
+    exclude_bots — без сообщений ботов: нашего (по id из токена) и тех, кого
+    коллектор отметил ботом. Для дайджеста, рейтингов и поиска.
+    """
     start, end = day_bounds(day, tz)
     rows = await pool.fetch(
         """
-        select * from messages
-         where chat_id = $1 and date >= $2 and date < $3
-           and ($4 or deleted_at is null)
-         order by date, tg_msg_id
+        select m.* from messages m
+         where m.chat_id = $1 and m.date >= $2 and m.date < $3
+           and ($4 or m.deleted_at is null)
+           and not ($5 and m.tg_user_id is not null and (
+                 m.tg_user_id = $6
+                 or exists (select 1 from authors a
+                             where a.tg_user_id = m.tg_user_id and a.is_bot)))
+         order by m.date, m.tg_msg_id
         """,
         chat_id,
         start,
         end,
         include_deleted,
+        exclude_bots,
+        cfg.bot_id or 0,
     )
     return [Message.from_row(r) for r in rows]
 

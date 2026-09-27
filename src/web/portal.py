@@ -225,6 +225,17 @@ async def portal_digest(request: Request, chat_id: int, day: str) -> HTMLRespons
         for story in (data.article or {}).get("stories", [])
         if story.get("thread_id") in by_thread
     ]
+    if not stories:
+        # статьи нет (старый день, модель не ответила) — те же темы, но в той же
+        # раскладке: ссылки из поста в группе ведут к якорям тем
+        stories = [
+            ({"thread_id": t.thread_id, "kicker": "", "headline": t.title,
+              "hook": t.short or t.takeaway or "",
+              "text": t.summary or t.takeaway or t.decision or ""}, t)
+            for t in data.topics
+        ]
+    # рабочие темы вперёд, оффтоп — отдельным разделом в конце
+    stories.sort(key=lambda pair: pair[1].is_offtopic)
     context.update(
         day=target,
         data=data,

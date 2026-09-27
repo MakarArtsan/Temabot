@@ -15,7 +15,7 @@
 <article class="issue">
   <header class="issue-head">
     <p class="kicker">{{ chat_name(chat) }} · {{ weekday(day) }}, {{ day.strftime('%d.%m.%Y') }}</p>
-    <h1 class="issue-title">{{ article.headline }}</h1>
+    <h1 class="issue-title">{{ article.headline or ('Дайджест за ' ~ day.strftime('%d.%m')) }}</h1>
     {% if article.lead %}<p class="lead-text">{{ article.lead }}</p>{% endif %}
   </header>
 
@@ -26,25 +26,35 @@
   </aside>
   {% endif %}
 
+  <p class="muted small issue-hint">Нажмите на новость, чтобы прочитать подробнее.</p>
   {% set ns = namespace(offtopic=false) %}
   {% for story, t in stories %}
     {% if t.is_offtopic and not ns.offtopic %}{% set ns.offtopic = true %}<h2 class="issue-section">☕ Не по делу, но интересно</h2>{% endif %}
-    <section class="story">
-      <p class="kicker">{{ story.kicker or kind_label(t.kind) }}</p>
-      <h2>{{ story.headline }}</h2>
-      {% if story.hook %}<p class="hook">{{ story.hook }}</p>{% endif %}
-      {% for para in story.text.split('\n\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
-      {% if t.sides %}
-        <p class="sides">{% for side in t.sides %}<span><b>{{ side.who }}</b> — {{ side.stance }}</span>{% endfor %}</p>
-      {% endif %}
-      <div class="meta">
-        {% set people = t.participants|length or t.contributors|length %}
-        {% if people %}<span>{{ icon('groups', 'sm') }}{{ people }}</span>{% endif %}
-        <span>{{ icon('message', 'sm') }}{{ t.msg_count }}</span>
-        {% if t.reactions %}<span>{{ icon('heart', 'sm') }}{{ t.reactions }}</span>{% endif %}
-        <a href="{{ deeplink(data.chat_tg_id, t.anchor_msg_id) }}" target="_blank" rel="noopener noreferrer">к обсуждению в Telegram {{ icon('external', 'sm') }}</a>
+    <details class="story" id="t{{ t.thread_id }}" name="issue">
+      <summary>
+        <span class="story-head">
+          {% set kicker = story.kicker or kind_label(t.kind) %}
+          {% if kicker %}<span class="kicker">{{ kicker }}</span>{% endif %}
+          <span class="story-title">{{ story.headline }}</span>
+          {% if story.hook %}<span class="hook">{{ story.hook }}</span>{% endif %}
+        </span>
+        {{ icon('chevron', 'story-chevron') }}
+      </summary>
+      <div class="story-body">
+        {% for para in story.text.split('\n\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
+        {% if t.sides %}
+          <p class="sides">{% for side in t.sides %}<span><b>{{ side.who }}</b> — {{ side.stance }}</span>{% endfor %}</p>
+        {% endif %}
+        {% if t.decision and t.decision not in story.text %}<p class="extra"><b>Итог:</b> {{ t.decision }}</p>{% endif %}
+        <div class="meta">
+          {% set people = t.participants|length or t.contributors|length %}
+          {% if people %}<span>{{ icon('groups', 'sm') }}{{ people }}</span>{% endif %}
+          <span>{{ icon('message', 'sm') }}{{ t.msg_count }}</span>
+          {% if t.reactions %}<span>{{ icon('heart', 'sm') }}{{ t.reactions }}</span>{% endif %}
+          <a href="{{ deeplink(data.chat_tg_id, t.anchor_msg_id) }}" target="_blank" rel="noopener noreferrer">к обсуждению в Telegram {{ icon('external', 'sm') }}</a>
+        </div>
       </div>
-    </section>
+    </details>
   {% endfor %}
 
   {% if data.unanswered %}
@@ -53,6 +63,16 @@
     <ul class="plain-list">
       {% for question, msg_id in data.unanswered[:5] %}
         <li><a href="{{ deeplink(data.chat_tg_id, msg_id) }}" target="_blank" rel="noopener noreferrer">{{ question }}</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  {% if data.links %}
+  <section class="card">
+    <div class="card-head"><h2>Ссылки дня</h2></div>
+    <ul class="plain-list">
+      {% for url in data.links[:10] %}
+        <li>{% if url.startswith('http://') or url.startswith('https://') %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer nofollow">{{ url }}</a>{% else %}{{ url }}{% endif %}</li>
       {% endfor %}
     </ul>
   </section>

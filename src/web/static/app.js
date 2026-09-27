@@ -305,6 +305,34 @@
     });
   }
 
+  // Выпуск: новости — аккордеон. Открыта одна; ссылка из поста в группе
+  // (…/d/2026-09-24#t11) раскрывает свою новость. Атрибут name у <details>
+  // делает это сам в новых браузерах, здесь — для остальных.
+  function initStories() {
+    var stories = document.querySelectorAll("details.story");
+    if (!stories.length) return;
+    document.addEventListener("toggle", function (event) {
+      var opened = event.target;
+      if (!opened.matches || !opened.matches("details.story") || !opened.open) return;
+      stories.forEach(function (other) { if (other !== opened) other.open = false; });
+    }, true);
+    function openFromHash() {
+      var id = decodeURIComponent(location.hash.slice(1));
+      var story = id && document.getElementById(id);
+      if (!story || !story.matches("details.story")) return;
+      story.open = true;
+      story.scrollIntoView({ block: "start" });
+    }
+    window.addEventListener("hashchange", openFromHash);
+    openFromHash();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initStories);
+  } else {
+    initStories();
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {

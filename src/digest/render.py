@@ -436,11 +436,20 @@ def topic_card(topic: Topic, chat_tg_id: int) -> str:
 HASHTAG = "#дайджест"
 
 
-def teaser_html(data: DigestData, url: str) -> str:
-    """Короткий пост в группу: заголовок выпуска, лид, пара крючков, ссылка.
+TEASER_STORIES = 6
 
-    Полный выпуск — статьёй на сайте (страница участников), сюда — только
-    приглашение его открыть.
+
+def story_anchor(thread_id: int) -> str:
+    """Якорь темы на странице выпуска: по нему страница раскроет именно её."""
+    return f"t{thread_id}"
+
+
+def teaser_html(data: DigestData, url: str) -> str:
+    """Короткий пост в группу: заголовок, лид, заголовки новостей ссылками, #дайджест.
+
+    Каждая новость — ссылка на свою тему на странице выпуска: там она сразу
+    раскрыта, а остальные свёрнуты. Подробностей в самом посте нет — чат не
+    засыпается простынёй.
     """
     article = data.article or {}
     headline = str(article.get("headline") or "") or f"Дайджест за {data.day:%d.%m}"
@@ -448,10 +457,24 @@ def teaser_html(data: DigestData, url: str) -> str:
     lead = str(article.get("lead") or "")
     if lead:
         lines += ["", esc_html(lead)]
-    teaser = [str(t) for t in (article.get("teaser") or []) if str(t).strip()]
-    if not teaser:
-        teaser = list(data.highlights[:3]) or [t.title for t in data.topics[:3]]
-    lines.append("")
-    lines += [f"• {esc_html(t)}" for t in teaser[:4]]
-    lines += ["", _html_link("Читать выпуск целиком →", url), "", HASHTAG]
+
+    by_thread = {t.thread_id: t for t in data.topics}
+    items: list[tuple[int, str]] = []
+    for story in article.get("stories") or []:
+        thread_id = story.get("thread_id")
+        if thread_id in by_thread and str(story.get("headline") or "").strip():
+            items.append((int(thread_id), str(story["headline"])))
+    if not items:   # статьи нет — заголовки тем дня, рабочие вперёд
+        ordered = sorted(data.topics, key=lambda t: t.is_offtopic)
+        items = [(t.thread_id, t.title) for t in ordered if t.title]
+
+    if items:
+        lines.append("")
+        lines += [
+            f"▸ {_html_link(title, f'{url}#{story_anchor(thread_id)}')}"
+            for thread_id, title in items[:TEASER_STORIES]
+        ]
+        if len(items) > TEASER_STORIES:
+            lines.append(f"…и ещё {len(items) - TEASER_STORIES}")
+    lines += ["", _html_link("Весь выпуск на сайте →", url), "", HASHTAG]
     return "\n".join(lines)

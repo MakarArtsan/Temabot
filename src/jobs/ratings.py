@@ -225,7 +225,9 @@ class RatingsResult:
 
 async def recalc_day(chat: Chat, day: date_type) -> RatingsResult:
     """Пересчитать день. Повторный запуск даёт тот же результат."""
-    messages = await repo.get_messages_by_day(chat.id, day, include_deleted=False)
+    messages = await repo.get_messages_by_day(
+        chat.id, day, include_deleted=False, exclude_bots=True
+    )
     stats = collect_day(chat, day, messages)
 
     contributions = await repo.get_thread_contributions(chat.id, day)

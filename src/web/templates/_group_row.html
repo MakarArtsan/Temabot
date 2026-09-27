@@ -1,6 +1,7 @@
 {% from "_ui.html" import icon, badge %}
 {% set name = chat_name(chat) %}
 {% set ratings_public = ((chat.settings or {}).get('ratings') or {}).get('publish') %}
+{% set topics = topics|default([]) %}
 {% macro post(field, value) -%}
 hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}" hx-swap="outerHTML"
 hx-vals='{"field":"{{ field }}","value":"{{ value }}","csrf_token":"{{ csrf }}"}'
@@ -55,6 +56,27 @@ hx-vals='{"field":"{{ field }}","value":"{{ value }}","csrf_token":"{{ csrf }}"}
         </div>
       </div>
     </div>
+
+    {% if chat.publish != 'off' and topics %}
+    {% set current_topic = (chat.settings or {}).get('publish_topic') or 1 %}
+    {% set chosen = topics|selectattr('id', 'equalto', current_topic)|list %}
+    <div class="row wrap">
+      <div class="text">
+        <div class="title">В какую тему публиковать</div>
+        <div class="hint">В группе включены темы: бот публикует дайджест{% if ratings_public %} и рейтинг недели{% endif %} в выбранную.
+          {% if chosen and chosen[0].closed %}<b>Эта тема закрыта — Telegram не даст боту в неё написать. Выберите открытую.</b>{% endif %}</div>
+      </div>
+      <div class="control">
+        <select name="value" aria-label="Тема для публикации" hx-trigger="change"
+                hx-post="/groups/{{ chat.tg_id }}" hx-target="#chat-{{ chat.tg_id }}" hx-swap="outerHTML"
+                hx-vals='{"field":"publish_topic","csrf_token":"{{ csrf }}"}'>
+          {% for t in topics %}
+            <option value="{{ t.id }}" {% if t.id == current_topic %}selected{% endif %}>{{ t.title }}{% if t.closed %} — закрыта{% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    {% endif %}
 
     {% if chat.publish != 'off' %}
     {% set fmt = (chat.settings or {}).get('publish_format', 'short') %}

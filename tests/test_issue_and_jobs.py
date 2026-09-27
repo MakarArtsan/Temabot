@@ -439,22 +439,35 @@ def test_article_survives_storage():
     assert DigestData.from_dict(data.to_dict()).article == ARTICLE
 
 
-def test_short_post_has_link_hashtag_and_escaped_text():
+def test_short_post_links_each_story_to_its_place_on_the_site():
+    """Пост компактный: заголовки новостей ссылками, подробности — на сайте."""
     url = "https://site.example.com/g/1/d/2026-09-24"
     post = teaser_html(digest_data(), url)
 
     assert post.startswith("📰 <b>Veo подешевел — и чат &lt;b&gt;взорвался&lt;/b&gt;</b>")
-    assert "• Почему Вася снова за Veo" in post
-    assert f'<a href="{url}">Читать выпуск целиком →</a>' in post
+    assert f'▸ <a href="{url}#t11">12 рублей за ролик</a>' in post
+    assert f'▸ <a href="{url}#t12">Питер ждёт</a>' in post
+    assert f'<a href="{url}">Весь выпуск на сайте →</a>' in post
     assert post.rstrip().endswith(HASHTAG)
-    assert "Герои" not in post              # рейтинги в короткий пост не идут
+    # подробностей, крючков и рейтингов в посте нет
+    assert "Абзац" not in post and "Вася пересчитал" not in post and "Герои" not in post
     assert len(post) < 1024
 
 
-def test_short_post_without_teaser_uses_highlights():
-    data = digest_data(article={"headline": "Заголовок"})
+def test_short_post_without_article_uses_topic_titles():
+    data = digest_data(article={})
     post = teaser_html(data, "https://x/g/1/d/2026-09-24")
-    assert "• Veo подешевел" in post
+    assert post.startswith("📰 <b>Дайджест за 24.09</b>")
+    assert '▸ <a href="https://x/g/1/d/2026-09-24#t11">Цены на генерацию</a>' in post
+    # рабочие темы вперёд, личное — после
+    assert post.index("Цены на генерацию") < post.index("Маша переезжает")
+
+
+def test_short_post_is_capped():
+    many = [Topic(thread_id=n, title=f"Тема {n}", kind="insight", msg_count=5)
+            for n in range(1, 11)]
+    post = teaser_html(digest_data(topics=many, article={}), "https://x/g/1/d/2026-09-24")
+    assert post.count("▸") == 6 and "…и ещё 4" in post
 
 
 @pytest.mark.parametrize(
@@ -485,9 +498,9 @@ def test_group_gets_short_post_or_full_digest():
     assert HASHTAG not in "".join(full) and "Цены на генерацию" in "".join(full)
     assert "Герои" not in "".join(full)
 
-    # статьи нет (модель не ответила) — уходит обычный дайджест, а не пустой пост
+    # статьи нет (модель не ответила) — всё равно короткий пост с заголовками тем
     fallback = publish.group_parts(digest_data(article={}), ratings_public=True, url=url)
-    assert "Цены на генерацию" in "".join(fallback)
+    assert len(fallback) == 1 and f'{url}#t11">Цены на генерацию' in fallback[0]
 
 
 def test_owner_picks_publish_format(monkeypatch: pytest.MonkeyPatch):
@@ -623,11 +636,14 @@ def test_issue_page_reads_like_an_article(portal_world: dict[str, Any]):
     assert "Не по делу, но интересно" in text
     assert text.index("12 рублей за ролик") < text.index("Не по делу") < text.index("Питер ждёт")
     assert "<b>Вася</b> — за Veo" in text
+    # новости — аккордеон: свёрнуты, открывается одна, якорь — для ссылок из поста
+    assert '<details class="story" id="t11" name="issue">' in text
+    assert "<details open" not in text
     # без оценок и признаков отбора
     assert "usefulness" not in text and "0.8" not in text
 
 
-def test_issue_without_article_falls_back_to_digest(
+def test_issue_without_article_uses_the_same_layout(
     portal_world: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
 ):
     plain = Digest(id=5, chat_id=1, day=DAY, summary_md="",
@@ -639,4 +655,7 @@ def test_issue_without_article_falls_back_to_digest(
     monkeypatch.setattr(web_app.repo, "get_digest", get_digest)
     page = client_as(MEMBER).get(f"/g/1/d/{DAY.isoformat()}")
     assert page.status_code == 200
-    assert "Цены на генерацию" in page.text and 'class="issue-title"' not in page.text
+    # те же темы в той же раскладке, чтобы ссылки из поста работали
+    assert "Дайджест за 24.09" in page.text
+    assert '<details class="story" id="t11" name="issue">' in page.text
+    assert "Цены на генерацию" in page.text and "Вася посчитал" in page.text

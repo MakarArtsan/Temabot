@@ -66,6 +66,7 @@ class Author:
     weight: float = 1.0
     muted: bool = False
     hide_from_ratings: bool = False
+    is_bot: bool = False
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> Author:
@@ -75,6 +76,7 @@ class Author:
             weight=row["weight"],
             muted=row["muted"],
             hide_from_ratings=row["hide_from_ratings"],
+            is_bot=bool(row.get("is_bot") or False),
         )
 
 
