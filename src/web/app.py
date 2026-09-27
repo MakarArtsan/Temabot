@@ -507,6 +507,10 @@ async def selection_preview(
 
     Сборка дня длится минутами, поэтому идёт в фоне: ответ — карточка
     «считаю…», которая сама спрашивает, готово ли (иначе прокси рвёт запрос).
+
+    Работа не теряется: если за день в архиве ничего нет, собранное сразу туда
+    ложится. Прежний дайджест дня молча не заменяем — вместе с ним пропали бы
+    оценки его тем, — для этого есть кнопка «Заменить в архиве».
     """
     auth.check_csrf(request, csrf_token)
     chat = await repo.get_chat_by_id(chat_id)
@@ -522,13 +526,19 @@ async def selection_preview(
         from src.digest import pipeline as digest_pipeline
 
         stored = await repo.get_digest(chat.id, target)
-        # save=False: превью ничего не перезаписывает и никуда не отправляется
+        # в группу и в личку ничего не уходит — только архив
         result = await digest_pipeline.build_digest(chat, target)
+        saved_id = None
+        if stored is None and not result.llm_is_down:
+            saved_id = await digest_pipeline.save_result(chat, target, result)
         return {
+            "chat": chat,
             "day": target,
             "result": result,
             "cost": cost_of(result.usage.tokens_in, result.usage.tokens_out),
             "old_markdown": stored.summary_md if stored else "",
+            "stored_id": stored.id if stored else None,
+            "saved_id": saved_id,
             "topics": sorted(result.all_topics, key=lambda t: -t.score),
         }
 
@@ -548,8 +558,40 @@ async def job_status(
     if job.done and view == "preview":
         if job.error:
             return render(request, "_preview.html", {"error": job.error, "day": None})
-        return render(request, "_preview.html", dict(job.result))
+        return render(request, "_preview.html", {**job.result, "job_id": job.id})
     return render(request, "_job.html", {"job": job, "view": view})
+
+
+@app.post("/jobs/{job_id}/save", response_class=HTMLResponse)
+async def job_save(
+    request: Request, job_id: str, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Положить пробный прогон в архив вместо прежнего дайджеста дня.
+
+    Сохраняется уже собранное — второй раз модель не зовём.
+    """
+    auth.check_csrf(request, csrf_token)
+    from src.digest import pipeline as digest_pipeline
+
+    job = jobs.get(job_id)
+    if job is None or not job.done or job.error or not isinstance(job.result, dict):
+        return render(request, "_saved.html", {"error": "прогон не найден — запустите ещё раз"})
+    data = job.result
+    if data.get("saved_id") is None:
+        if data["result"].llm_is_down:
+            return render(request, "_saved.html",
+                          {"error": "модель не ответила — сохранять нечего"})
+        data["saved_id"] = -1  # второй клик, пока идёт запись, не запишет ещё раз
+        try:
+            data["saved_id"] = await digest_pipeline.save_result(
+                data["chat"], data["day"], data["result"]
+            )
+        except Exception as exc:
+            data["saved_id"] = None
+            log.exception("Прогон не сохранился")
+            return render(request, "_saved.html", {"error": str(exc) or "ошибка базы"})
+    return render(request, "_saved.html", {"saved_id": data["saved_id"], "day": data["day"]})
 
 
 # --------------------------------------------------------------- дайджесты

@@ -2,6 +2,22 @@
 {% if error %}
   <div class="note bad">{{ icon('alert') }}<p>Не получилось собрать: {{ error }}</p></div>
 {% else %}
+  <div id="archive-{{ job_id }}" style="margin-bottom:14px">
+  {% if saved_id %}
+    {% with day=day %}{% include "_saved.html" %}{% endwith %}
+  {% elif result.llm_is_down %}
+    <div class="note bad">{{ icon('alert') }}<p>Модель не ответила ни на одно обсуждение — в архив не сохраняю.</p></div>
+  {% elif stored_id and job_id %}
+    <div class="note accent">{{ icon('info') }}
+      <div><p>За этот день в архиве уже есть <a href="/digests/{{ stored_id }}">дайджест</a> — его не трогал.
+        Если новый лучше, замените: оценки тем прежней версии пропадут, а пост, если он уже был в группе, останется прежним.</p>
+        <form hx-post="/jobs/{{ job_id }}/save" hx-target="#archive-{{ job_id }}" hx-disabled-elt="find button" style="margin-top:8px">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <button class="btn sm" type="submit">{{ icon('download', 'sm') }}Заменить в архиве</button>
+        </form></div></div>
+  {% endif %}
+  </div>
+
   <h3 style="margin-bottom:8px">Что получилось за {{ day.strftime('%d.%m.%Y') if day else '' }}</h3>
   {% if topics %}
     <div class="rows">

@@ -523,38 +523,50 @@ async def run_for_chat(
             f"дайджест за {day} не сохранён"
         )
     if save:
-        # повторный прогон за тот же день перезаписывает запись (§4.3 п.8)
-        result.digest_id = await repo.save_digest(
-            chat.id,
-            day,
-            result.markdown,
-            payload=result.data.to_dict() if result.data else {},
-            msg_count=result.msg_count,
-            tokens_used=result.usage.tokens_in + result.usage.tokens_out,
-        )
-        # отсеянные темы тоже сохраняем: они нужны для /missed и для обучения
-        item_ids = await repo.save_digest_items(
-            result.digest_id,
-            chat.id,
-            [_topic_as_item(t) for t in result.all_topics],
-        )
-        for topic, item_id in zip(result.all_topics, item_ids, strict=False):
-            topic.item_id = item_id
-
-        # вклад участников в треды — основа рейтингов (TZ §4.10)
-        await repo.save_thread_contributions(
-            chat.id,
-            day,
-            [
-                {"thread_id": topic.thread_id, "tg_user_id": c["tg_user_id"],
-                 "role": c["role"]}
-                for topic in result.all_topics
-                for c in topic.contributors
-            ],
-        )
-        await _add_heroes(chat, day, result)
-        result.lore = await _update_lore(chat, day, result, llm=llm)
+        await save_result(chat, day, result, llm=llm)
     return result
+
+
+async def save_result(
+    chat: Chat, day: date_type, result: DigestResult, *, llm: LLMCall = chat_json
+) -> int:
+    """Записать собранный день в архив: дайджест, темы, вклад участников, лор.
+
+    Отдельно от сборки — чтобы пробный прогон из «Отбора тем» можно было
+    сохранить, не платя за второй разбор того же дня.
+    """
+    # повторный прогон за тот же день перезаписывает запись (§4.3 п.8)
+    result.digest_id = await repo.save_digest(
+        chat.id,
+        day,
+        result.markdown,
+        payload=result.data.to_dict() if result.data else {},
+        msg_count=result.msg_count,
+        tokens_used=result.usage.tokens_in + result.usage.tokens_out,
+    )
+    # отсеянные темы тоже сохраняем: они нужны для /missed и для обучения
+    item_ids = await repo.save_digest_items(
+        result.digest_id,
+        chat.id,
+        [_topic_as_item(t) for t in result.all_topics],
+    )
+    for topic, item_id in zip(result.all_topics, item_ids, strict=False):
+        topic.item_id = item_id
+
+    # вклад участников в треды — основа рейтингов (TZ §4.10)
+    await repo.save_thread_contributions(
+        chat.id,
+        day,
+        [
+            {"thread_id": topic.thread_id, "tg_user_id": c["tg_user_id"],
+             "role": c["role"]}
+            for topic in result.all_topics
+            for c in topic.contributors
+        ],
+    )
+    await _add_heroes(chat, day, result)
+    result.lore = await _update_lore(chat, day, result, llm=llm)
+    return result.digest_id
 
 
 async def lore_context(chat: Chat) -> str:

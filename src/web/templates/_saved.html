@@ -1,0 +1,9 @@
+{% from "_ui.html" import icon %}
+{% if error %}
+  <div class="note bad">{{ icon('alert') }}<p>Не сохранил: {{ error }}.</p></div>
+{% elif saved_id == -1 %}
+  <div class="note accent">{{ icon('clock') }}<p>Уже сохраняю — обновите страницу через минуту.</p></div>
+{% else %}
+  <div class="note ok">{{ icon('check') }}<p>Дайджест за {{ day.strftime('%d.%m') }} в архиве.
+    <a href="/digests/{{ saved_id }}">Открыть</a></p></div>
+{% endif %}

@@ -119,7 +119,10 @@ async def test_failed_job_keeps_the_error():
     assert job.done and job.error == "модель не ответила"
 
 
-def _admin_world(monkeypatch: pytest.MonkeyPatch, *, build_delay: float = 0.0) -> list[Any]:
+def _admin_world(
+    monkeypatch: pytest.MonkeyPatch, *, build_delay: float = 0.0,
+    stored: Digest | None = None, llm_down: bool = False,
+) -> list[Any]:
     chat = Chat(id=1, tg_id=-100111, title="Нейросети", collect=True, digest=True)
     builds: list[Any] = []
 
@@ -127,15 +130,20 @@ def _admin_world(monkeypatch: pytest.MonkeyPatch, *, build_delay: float = 0.0) -
         return chat if chat_id == 1 else None
 
     async def get_digest(chat_id: int, day: date) -> Digest | None:
-        return None
+        return stored
 
     async def build_digest(chat: Chat, day: date, **kw: Any) -> Any:
         builds.append(day)
         await asyncio.sleep(build_delay)
         return SimpleNamespace(
             usage=Usage(tokens_in=100, tokens_out=50), all_topics=topics(),
-            markdown="*Дайджест*", data=digest_data(), digest_id=77,
+            markdown="*Дайджест*", data=digest_data(), digest_id=None, llm_is_down=llm_down,
         )
+
+    async def save_result(chat: Chat, day: date, result: Any, **kw: Any) -> int:
+        builds.append(("archive", day))
+        result.digest_id = 77
+        return 77
 
     async def run_for_chat(chat: Chat, day: date, *, save: bool = True) -> Any:
         builds.append(("save", day, save))
@@ -145,6 +153,7 @@ def _admin_world(monkeypatch: pytest.MonkeyPatch, *, build_delay: float = 0.0) -
     monkeypatch.setattr(web_app.repo, "get_digest", get_digest)
     monkeypatch.setattr(dp, "build_digest", build_digest)
     monkeypatch.setattr(dp, "run_for_chat", run_for_chat)
+    monkeypatch.setattr(dp, "save_result", save_result)
     return builds
 
 
@@ -172,8 +181,58 @@ def test_preview_answers_at_once_and_page_polls_for_the_result(monkeypatch: pyte
         job_id = page.text.split('hx-get="/jobs/')[1].split("?")[0]
         result = _poll(client, f"/jobs/{job_id}?view=preview", "Цены на генерацию")
 
-    assert builds == [DAY]
+    assert builds == [DAY, ("archive", DAY)]   # за день было пусто — прогон лёг в архив
     assert "hx-get" not in result          # готово — опрос прекращается
+    assert 'href="/digests/77"' in result and "Заменить в архиве" not in result
+
+
+def _run_preview(client: TestClient) -> tuple[str, str]:
+    page = client.post("/selection/1/preview",
+                       data={"day": "2026-09-24", "csrf_token": csrf_of(client)})
+    job_id = page.text.split('hx-get="/jobs/')[1].split("?")[0]
+    return job_id, _poll(client, f"/jobs/{job_id}?view=preview", "Цены на генерацию")
+
+
+def test_preview_never_silently_replaces_a_stored_digest(monkeypatch: pytest.MonkeyPatch):
+    """Прежний дайджест дня заменяется только по кнопке: с ним уходят оценки тем."""
+    stored = Digest(id=5, chat_id=1, day=DAY, summary_md="*Старый*", payload={}, msg_count=80)
+    builds = _admin_world(monkeypatch, stored=stored)
+    with client_as(OWNER) as client:
+        job_id, result = _run_preview(client)
+        assert builds == [DAY]
+        assert "Заменить в архиве" in result and 'href="/digests/5"' in result
+        assert f'hx-post="/jobs/{job_id}/save"' in result
+
+        for _ in range(2):   # второй клик не пишет ещё раз
+            saved = client.post(f"/jobs/{job_id}/save", data={"csrf_token": csrf_of(client)})
+            assert saved.status_code == 200 and 'href="/digests/77"' in saved.text
+        # и повторный показ прогона помнит, что он уже в архиве
+        again = client.get(f"/jobs/{job_id}?view=preview").text
+        assert "Заменить в архиве" not in again and 'href="/digests/77"' in again
+
+    assert builds == [DAY, ("archive", DAY)]   # модель второй раз не звали
+
+
+def test_preview_with_model_down_is_not_archived(monkeypatch: pytest.MonkeyPatch):
+    builds = _admin_world(monkeypatch, llm_down=True)
+    with client_as(OWNER) as client:
+        job_id, result = _run_preview(client)
+        assert "не сохраняю" in result
+        saved = client.post(f"/jobs/{job_id}/save", data={"csrf_token": csrf_of(client)})
+        assert "не ответила" in saved.text
+    assert builds == [DAY]
+
+
+def test_saving_a_preview_is_owner_only_and_needs_csrf(monkeypatch: pytest.MonkeyPatch):
+    stored = Digest(id=5, chat_id=1, day=DAY, summary_md="", payload={}, msg_count=80)
+    builds = _admin_world(monkeypatch, stored=stored)
+    with client_as(OWNER) as owner:
+        job_id, _ = _run_preview(owner)
+        assert owner.post(f"/jobs/{job_id}/save", data={"csrf_token": "чужой"}).status_code == 403
+        member = client_as(MEMBER)
+        response = member.post(f"/jobs/{job_id}/save", data={"csrf_token": csrf_of(member)})
+        assert response.status_code == 303
+    assert builds == [DAY]
 
 
 def test_bad_preview_date_is_reported_without_a_job(monkeypatch: pytest.MonkeyPatch):
