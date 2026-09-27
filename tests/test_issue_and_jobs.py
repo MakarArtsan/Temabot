@@ -439,68 +439,129 @@ def test_article_survives_storage():
     assert DigestData.from_dict(data.to_dict()).article == ARTICLE
 
 
-def test_short_post_links_each_story_to_its_place_on_the_site():
-    """Пост компактный: заголовки новостей ссылками, подробности — на сайте."""
-    url = "https://site.example.com/g/1/d/2026-09-24"
-    post = teaser_html(digest_data(), url)
+URL = "https://site.example.com/g/1/d/2026-09-24"
 
-    assert post.startswith("📰 <b>Veo подешевел — и чат &lt;b&gt;взорвался&lt;/b&gt;</b>")
-    assert f'▸ <a href="{url}#t11">12 рублей за ролик</a>' in post
-    assert f'▸ <a href="{url}#t12">Питер ждёт</a>' in post
-    assert f'<a href="{url}">Весь выпуск на сайте →</a>' in post
+
+def test_short_post_reads_like_a_magazine_announcement():
+    """«Выпуск #3: …» ссылкой, абзац о главном с именами, «Плюс …», ссылка, #дайджест."""
+    article = {**ARTICLE,
+               "post": "Вася посчитал, что Veo выходит в 12 ₽ за ролик, а Маша едет в Питер.",
+               "also": ["липсинг", "Draft-мод", "танцы на столе"]}
+    post = teaser_html(digest_data(article=article), URL, number=3)
+
+    assert post.startswith(
+        f'<b><a href="{URL}">Выпуск #3: Veo подешевел — и чат &lt;b&gt;взорвался&lt;/b&gt;</a></b>'
+    )
+    assert ("Вася посчитал, что Veo выходит в 12 ₽ за ролик, а Маша едет в Питер. "
+            "Плюс липсинг, Draft-мод и танцы на столе.") in post
+    assert f'<a href="{URL}">Читать выпуск на сайте →</a>' in post
     assert post.rstrip().endswith(HASHTAG)
-    # подробностей, крючков и рейтингов в посте нет
-    assert "Абзац" not in post and "Вася пересчитал" not in post and "Герои" not in post
+    # один компактный пост: ни подробностей тем, ни списка, ни рейтингов, ни голых адресов
+    assert "Абзац" not in post and "▸" not in post and "Герои" not in post
+    assert post.count("https://") == 2 and ">https://" not in post
     assert len(post) < 1024
 
 
-def test_short_post_without_article_uses_topic_titles():
-    data = digest_data(article={})
-    post = teaser_html(data, "https://x/g/1/d/2026-09-24")
-    assert post.startswith("📰 <b>Дайджест за 24.09</b>")
-    assert '▸ <a href="https://x/g/1/d/2026-09-24#t11">Цены на генерацию</a>' in post
-    # рабочие темы вперёд, личное — после
-    assert post.index("Цены на генерацию") < post.index("Маша переезжает")
+def test_old_article_without_post_uses_the_lead():
+    post = teaser_html(digest_data(), URL, number=1)
+    assert "Главное за среду: цены, споры и один переезд." in post and "Плюс" not in post
 
 
-def test_short_post_is_capped():
+def test_no_article_builds_the_announcement_from_topics():
     many = [Topic(thread_id=n, title=f"Тема {n}", kind="insight", msg_count=5)
-            for n in range(1, 11)]
-    post = teaser_html(digest_data(topics=many, article={}), "https://x/g/1/d/2026-09-24")
-    assert post.count("▸") == 6 and "…и ещё 4" in post
+            for n in range(1, 10)]
+    data = digest_data(topics=many, article={}, highlights=["Главное раз", "Главное два."])
+    post = teaser_html(data, URL, number=2)
+    assert "Выпуск #2: Тема 1, Тема 2 и Тема 3</a>" in post
+    assert "Главное раз. Главное два. Плюс Тема 4, Тема 5, Тема 6, Тема 7 и Тема 8." in post
+
+
+def test_work_topics_lead_the_announcement():
+    post = teaser_html(digest_data(article={}), URL)
+    assert "Цены на генерацию и Маша переезжает</a>" in post
 
 
 @pytest.mark.parametrize(
     ("portal", "fmt", "base", "expected"),
     [
-        ("digests", None, "https://site.example.com/", "https://site.example.com/g/1/d/2026-09-24"),
-        ("all", "short", "https://site.example.com", "https://site.example.com/g/1/d/2026-09-24"),
+        ("digests", None, "https://site.example.com/", URL),
+        ("all", "short", "https://site.example.com", URL),
         ("off", None, "https://site.example.com", ""),      # участники ссылку не откроют
         ("all", "full", "https://site.example.com", ""),    # владелец выбрал «целиком»
         ("all", None, "", ""),                              # адрес сайта неизвестен
     ],
 )
 def test_article_link_only_when_members_can_open_it(
-    monkeypatch: pytest.MonkeyPatch, portal: str, fmt: str | None, base: str, expected: str,
+    portal: str, fmt: str | None, base: str, expected: str,
 ):
-    monkeypatch.setattr(publish.cfg, "WEB_BASE_URL", base)
     settings = {"publish_format": fmt} if fmt else {}
     chat = Chat(id=1, tg_id=-100111, portal=portal, settings=settings)
-    assert publish.article_url(chat, DAY) == expected
+    assert publish.article_url(chat, DAY, base) == expected
 
 
 def test_group_gets_short_post_or_full_digest():
-    url = "https://site.example.com/g/1/d/2026-09-24"
-    short = publish.group_parts(digest_data(), ratings_public=False, url=url)
-    assert len(short) == 1 and HASHTAG in short[0] and url in short[0]
+    short = publish.group_parts(digest_data(), ratings_public=False, url=URL, number=4)
+    assert len(short) == 1 and HASHTAG in short[0] and "Выпуск #4" in short[0]
 
     full = publish.group_parts(digest_data(), ratings_public=False, url="")
     assert HASHTAG not in "".join(full) and "Цены на генерацию" in "".join(full)
     assert "Герои" not in "".join(full)
 
-    # статьи нет (модель не ответила) — всё равно короткий пост с заголовками тем
-    fallback = publish.group_parts(digest_data(article={}), ratings_public=True, url=url)
-    assert len(fallback) == 1 and f'{url}#t11">Цены на генерацию' in fallback[0]
+
+async def test_site_address_is_remembered_when_env_is_empty(monkeypatch: pytest.MonkeyPatch):
+    """На Amvera WEB_BASE_URL не задан — короткий пост всё равно получает ссылку."""
+    monkeypatch.setattr(publish.cfg, "WEB_BASE_URL", "")
+
+    async def get_state(key: str, default: Any = None) -> Any:
+        assert key == publish.SITE_URL_KEY
+        return {"url": "https://temabot.example.app/"}
+
+    async def number(chat_id: int, day: date) -> int:
+        return 7
+
+    monkeypatch.setattr(publish.repo, "get_state", get_state)
+    monkeypatch.setattr(publish.repo, "digest_issue_number", number)
+    chat = Chat(id=1, tg_id=-100111, portal="all", settings={})
+
+    parts = await publish.post_for_group(digest_data(), chat)
+    assert len(parts) == 1
+    assert "https://temabot.example.app/g/1/d/2026-09-24" in parts[0] and "Выпуск #7" in parts[0]
+    assert await publish.full_post_reason(chat) == ""
+
+
+async def test_admin_explains_why_the_full_digest_goes_out(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(publish.cfg, "WEB_BASE_URL", "")
+
+    async def nothing(key: str, default: Any = None) -> Any:
+        return None
+
+    monkeypatch.setattr(publish.repo, "get_state", nothing)
+    assert "адрес сайта" in await publish.full_post_reason(Chat(id=1, tg_id=1, portal="all"))
+    assert "закрыта" in await publish.full_post_reason(Chat(id=1, tg_id=1, portal="off"))
+    full = Chat(id=1, tg_id=1, portal="all", settings={"publish_format": "full"})
+    assert "целиком" in await publish.full_post_reason(full)
+
+
+def test_site_is_remembered_only_from_the_owner(monkeypatch: pytest.MonkeyPatch):
+    """Подделанный Host от постороннего не должен стать адресом в посте."""
+    saved: list[Any] = []
+
+    async def set_state(key: str, value: Any) -> None:
+        saved.append(value)
+
+    monkeypatch.setattr(web_app.cfg, "WEB_BASE_URL", "")
+    monkeypatch.setattr(web_app.cfg, "DATABASE_URL", "postgresql://x@127.0.0.1:1/none")
+    monkeypatch.setattr(web_app.repo, "set_state", set_state)
+    monkeypatch.setattr(web_app, "_remembered_site", "")
+    headers = {"host": "evil.example.com", "x-forwarded-proto": "https"}
+
+    client_as(None).get("/login", headers=headers)
+    client_as(MEMBER).get("/login", headers=headers)
+    assert saved == []
+
+    client_as(OWNER).get("/login", headers={"host": "temabot.example.app",
+                                            "x-forwarded-proto": "https"})
+    assert saved and saved[-1]["url"] == "https://temabot.example.app"
 
 
 def test_owner_picks_publish_format(monkeypatch: pytest.MonkeyPatch):

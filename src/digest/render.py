@@ -436,45 +436,43 @@ def topic_card(topic: Topic, chat_tg_id: int) -> str:
 HASHTAG = "#дайджест"
 
 
-TEASER_STORIES = 6
-
-
 def story_anchor(thread_id: int) -> str:
     """Якорь темы на странице выпуска: по нему страница раскроет именно её."""
     return f"t{thread_id}"
 
 
-def teaser_html(data: DigestData, url: str) -> str:
-    """Короткий пост в группу: заголовок, лид, заголовки новостей ссылками, #дайджест.
+def _join_ru(items: list[str]) -> str:
+    """«a, b и c»."""
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " и " + items[-1]
 
-    Каждая новость — ссылка на свою тему на странице выпуска: там она сразу
-    раскрыта, а остальные свёрнуты. Подробностей в самом посте нет — чат не
-    засыпается простынёй.
+
+def teaser_html(data: DigestData, url: str, number: int | None = None) -> str:
+    """Короткий пост в группу — один абзац, как анонс номера журнала.
+
+    «Выпуск #3: Сан-Франциско, … и предоплата 50%» ссылкой на выпуск, 2–3
+    предложения о главном с именами, «Плюс …» об остальном, ссылка, #дайджест.
+    Подробности — на сайте, чат не засыпается простынёй.
     """
     article = data.article or {}
-    headline = str(article.get("headline") or "") or f"Дайджест за {data.day:%d.%m}"
-    lines = [f"📰 <b>{esc_html(headline)}</b>"]
-    lead = str(article.get("lead") or "")
-    if lead:
-        lines += ["", esc_html(lead)]
+    ordered = sorted(data.topics, key=lambda t: t.is_offtopic)   # рабочие вперёд
+    headline = str(article.get("headline") or "") or _join_ru([t.title for t in ordered[:3]])
+    headline = headline or f"Дайджест за {data.day:%d.%m}"
+    title = f"Выпуск #{number}: {headline}" if number else headline
+    lines = [f"<b>{_html_link(title, url)}</b>"]
 
-    by_thread = {t.thread_id: t for t in data.topics}
-    items: list[tuple[int, str]] = []
-    for story in article.get("stories") or []:
-        thread_id = story.get("thread_id")
-        if thread_id in by_thread and str(story.get("headline") or "").strip():
-            items.append((int(thread_id), str(story["headline"])))
-    if not items:   # статьи нет — заголовки тем дня, рабочие вперёд
-        ordered = sorted(data.topics, key=lambda t: t.is_offtopic)
-        items = [(t.thread_id, t.title) for t in ordered if t.title]
-
-    if items:
-        lines.append("")
-        lines += [
-            f"▸ {_html_link(title, f'{url}#{story_anchor(thread_id)}')}"
-            for thread_id, title in items[:TEASER_STORIES]
-        ]
-        if len(items) > TEASER_STORIES:
-            lines.append(f"…и ещё {len(items) - TEASER_STORIES}")
-    lines += ["", _html_link("Весь выпуск на сайте →", url), "", HASHTAG]
+    if article:
+        body = str(article.get("post") or article.get("lead") or "").strip()
+        also = [str(a) for a in article.get("also") or [] if str(a).strip()]
+    else:
+        # статьи нет (модель не ответила) — «Главное за день» и названия остальных тем
+        body = " ".join(h.rstrip(".") + "." for h in data.highlights[:3])
+        also = [t.title for t in ordered[3:8]]
+    if also:
+        body = (body + " " if body else "") + f"Плюс {_join_ru(also)}."
+    if body:
+        lines += ["", esc_html(body)]
+    lines += ["", _html_link("Читать выпуск на сайте →", url), "", HASHTAG]
     return "\n".join(lines)

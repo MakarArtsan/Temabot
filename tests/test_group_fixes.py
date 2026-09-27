@@ -301,3 +301,11 @@ def test_owner_picks_a_topic(admin: dict[str, Any]):
 def test_no_topic_picker_in_a_group_without_topics(admin: dict[str, Any]):
     admin["states"] = {"topics:1": {"topics": []}}
     assert "В какую тему публиковать" not in owner_client().get("/groups").text
+
+
+async def test_issue_number_counts_digests_up_to_the_day(db: None):
+    chat = await repo.get_or_create_chat(-100111, "Группа")
+    for day in (date(2026, 9, 20), date(2026, 9, 22), date(2026, 9, 24)):
+        await repo.save_digest(chat.id, day, "текст")
+    assert await repo.digest_issue_number(chat.id, date(2026, 9, 22)) == 2
+    assert await repo.digest_issue_number(chat.id, date(2026, 9, 24)) == 3

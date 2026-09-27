@@ -30,6 +30,7 @@ from src.digest.publish import (
     PUBLISH_LABELS,
     PUBLISH_MODES,
     PublishResult,
+    full_post_reason,
     group_preview,
     publish_digest,
     unpublish_digest,
@@ -69,6 +70,50 @@ app = FastAPI(
 )
 # стили, скрипты и библиотеки лежат в репозитории: страница не зависит от CDN
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "testserver", "0.0.0.0"}
+_remembered_site = ""
+
+
+def request_site(request: Request) -> str:
+    """Адрес сайта, как его видит браузер (за прокси хостинга — по X-Forwarded-*)."""
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    if not host or host.split(":")[0] in LOCAL_HOSTS:
+        return ""
+    # TLS хостинг снимает на прокси: без заголовка считаем, что снаружи https
+    proto = request.headers.get("x-forwarded-proto") or "https"
+    return f"{proto.split(',')[0].strip()}://{host}"
+
+
+@app.middleware("http")
+async def remember_site(request: Request, call_next: Callable[..., Any]) -> Response:
+    """Запомнить адрес сайта для ссылок в посте, если WEB_BASE_URL не задан.
+
+    Берём только из запросов владельца: подделать заголовок Host и подсунуть
+    боту чужой адрес для поста в группе посторонний не сможет.
+    """
+    response: Response = await call_next(request)
+    await remember_site_now(request)
+    return response
+
+
+async def remember_site_now(request: Request) -> None:
+    global _remembered_site
+    if cfg.WEB_BASE_URL or not cfg.DATABASE_URL or auth.current_user(request) is None:
+        return
+    site = request_site(request)
+    if not site or site == _remembered_site:
+        return
+    from src.digest.publish import SITE_URL_KEY
+
+    try:
+        await repo.set_state(
+            SITE_URL_KEY, {"url": site, "at": datetime.now(ZoneInfo(cfg.TZ)).isoformat()}
+        )
+        _remembered_site = site
+    except Exception:
+        log.warning("Адрес сайта не запомнился", exc_info=True)
 
 
 @app.middleware("http")
@@ -197,16 +242,16 @@ async def with_bot(action: Callable[[Any], Awaitable[PublishResult]]) -> Publish
         await bot.session.close()
 
 
-def portal_url() -> str:
+def portal_url(request: Request | None = None) -> str:
     """Ссылка на страницу участников — её владелец отправляет в группу сам."""
-    base = cfg.WEB_BASE_URL.rstrip("/")
+    base = cfg.WEB_BASE_URL.rstrip("/") or (request_site(request) if request else "")
     return f"{base}/g" if base else "/g"
 
 
 def render(request: Request, name: str, context: dict[str, Any]) -> HTMLResponse:
     session = auth.current_user(request)
     context.setdefault("csrf", (session or {}).get("csrf", ""))
-    context.setdefault("portal_url", portal_url())
+    context.setdefault("portal_url", portal_url(request))
     return TEMPLATES.TemplateResponse(request, name, context)
 
 
@@ -725,6 +770,7 @@ async def digest_detail(
         raise HTTPException(404, "Дайджест не найден")
     chat = await repo.get_chat_by_id(digest.chat_id)
     items = await repo.get_digest_items(digest_id)
+    await remember_site_now(request)   # чтобы предпросмотр сразу был коротким постом
     return render(
         request,
         "digest_detail.html",
@@ -732,7 +778,8 @@ async def digest_detail(
             "active": "digests",
             "digest": digest,
             "chat": chat,
-            "preview": group_preview(digest.payload, chat) if chat else [],
+            "preview": await group_preview(digest.payload, chat) if chat else [],
+            "full_reason": await full_post_reason(chat) if chat else "",
             "items": items,
             "shown": [i for i in items if i["shown"]],
             "missed": [i for i in items if not i["shown"]],
@@ -759,6 +806,7 @@ async def digest_publish(
 ) -> HTMLResponse:
     """Опубликовать дайджест в его группе — после просмотра владельцем."""
     auth.check_csrf(request, csrf_token)
+    await remember_site_now(request)
     result = await with_bot(lambda bot: publish_digest(bot, digest_id))
     return await _publish_box(request, digest_id, result)
 

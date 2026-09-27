@@ -969,6 +969,14 @@ async def save_digest(
     return int(digest_id)
 
 
+async def digest_issue_number(chat_id: int, day: date_type) -> int:
+    """Номер выпуска: сколько дайджестов группы вышло по этот день включительно."""
+    value = await pool.fetchval(
+        "select count(*) from digests where chat_id = $1 and day <= $2", chat_id, day
+    )
+    return int(value or 0)
+
+
 async def get_digest(chat_id: int, day: date_type) -> Digest | None:
     row = await pool.fetchrow(
         "select * from digests where chat_id = $1 and day = $2", chat_id, day

@@ -52,6 +52,9 @@
     <div class="card-head">
       <div><h2>Так его увидит группа</h2><p class="muted small">Тот же текст, что уйдёт в Telegram, — без кнопок оценки.</p></div>
     </div>
+    {% if full_reason and preview %}
+      <div class="note accent">{{ icon('info') }}<p>Уйдёт весь дайджест, а не короткий пост со ссылкой: {{ full_reason }}.</p></div>
+    {% endif %}
     {% for part in preview %}
       {# текст собран render_html: всё, что пришло от людей и модели, уже экранировано #}
       <div class="tg-post">{{ part|safe }}</div>

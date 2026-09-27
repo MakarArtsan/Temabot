@@ -390,6 +390,8 @@ def clean_article(data: Any, topics: list[Topic]) -> dict[str, Any]:
     return {
         "headline": str(data.get("headline")).strip()[:120],
         "lead": str(data.get("lead") or "").strip()[:500],
+        "post": str(data.get("post") or "").strip()[:700],
+        "also": [a[:40] for a in _as_str_list(data.get("also"))[:6]],
         "teaser": _as_str_list(data.get("teaser"))[:4],
         "stories": stories,
     }

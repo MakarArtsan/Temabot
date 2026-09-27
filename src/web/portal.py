@@ -236,8 +236,13 @@ async def portal_digest(request: Request, chat_id: int, day: str) -> HTMLRespons
         ]
     # рабочие темы вперёд, оффтоп — отдельным разделом в конце
     stories.sort(key=lambda pair: pair[1].is_offtopic)
+    try:
+        number: int | None = await repo.digest_issue_number(chat.id, target)
+    except Exception:
+        number = None   # номер — украшение, без него выпуск всё равно открывается
     context.update(
         day=target,
+        number=number,
         data=data,
         article=data.article or {},
         stories=stories,

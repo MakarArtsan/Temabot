@@ -14,7 +14,7 @@
 {% if stories %}
 <article class="issue">
   <header class="issue-head">
-    <p class="kicker">{{ chat_name(chat) }} · {{ weekday(day) }}, {{ day.strftime('%d.%m.%Y') }}</p>
+    <p class="kicker">{% if number %}Выпуск #{{ number }} · {% endif %}{{ chat_name(chat) }} · {{ weekday(day) }}, {{ day.strftime('%d.%m.%Y') }}</p>
     <h1 class="issue-title">{{ article.headline or ('Дайджест за ' ~ day.strftime('%d.%m')) }}</h1>
     {% if article.lead %}<p class="lead-text">{{ article.lead }}</p>{% endif %}
   </header>

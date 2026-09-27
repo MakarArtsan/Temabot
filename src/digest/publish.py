@@ -86,20 +86,64 @@ def explain_telegram_error(exc: Exception) -> str:
     return text
 
 
-def article_url(chat: Chat, day: Any) -> str:
-    """Ссылка на выпуск-статью на сайте — или "", если короткий пост не годится.
+SITE_URL_KEY = "web:base_url"
+
+
+async def site_base() -> str:
+    """Адрес сайта: из WEB_BASE_URL, а если он не задан — какой запомнила админка.
+
+    На хостинге переменную легко забыть, и тогда вместо короткого поста в
+    группу уходила вся простыня. Админка знает свой адрес по входящим запросам.
+    """
+    if cfg.WEB_BASE_URL:
+        return cfg.WEB_BASE_URL.rstrip("/")
+    try:
+        saved = await repo.get_state(SITE_URL_KEY)
+    except Exception:
+        log.warning("Адрес сайта не прочитался", exc_info=True)
+        return ""
+    return str((saved or {}).get("url") or "").rstrip("/")
+
+
+def article_url(chat: Chat, day: Any, base: str) -> str:
+    """Ссылка на выпуск на сайте — или "", если короткий пост не годится.
 
     Короткий пост со ссылкой имеет смысл, только если участники могут эту
     ссылку открыть: страница участников для группы включена и адрес сайта известен.
     """
-    base = cfg.WEB_BASE_URL.rstrip("/")
     fmt = (chat.settings or {}).get("publish_format", "short")
     if not base or chat.portal == "off" or fmt == "full":
         return ""
-    return f"{base}/g/{chat.id}/d/{day.isoformat()}"
+    return f"{base.rstrip('/')}/g/{chat.id}/d/{day.isoformat()}"
 
 
-def group_parts(data: DigestData, *, ratings_public: bool, url: str = "") -> list[str]:
+async def full_post_reason(chat: Chat) -> str:
+    """Почему в группу уйдёт весь дайджест, а не короткий пост ("" — уйдёт короткий)."""
+    if (chat.settings or {}).get("publish_format") == "full":
+        return "в «Группах» выбран формат «целиком»"
+    if chat.portal == "off":
+        return ("страница участников для группы закрыта — ссылку из поста никто не откроет; "
+                "откройте её в «Группах»")
+    if not await site_base():
+        return "адрес сайта неизвестен — задайте WEB_BASE_URL в настройках Amvera"
+    return ""
+
+
+async def post_for_group(data: DigestData, chat: Chat) -> list[str]:
+    """Что уйдёт в группу: короткий пост с номером выпуска или весь дайджест."""
+    url = article_url(chat, data.day, await site_base())
+    number = None
+    if url:
+        try:
+            number = await repo.digest_issue_number(chat.id, data.day)
+        except Exception:
+            log.warning("Номер выпуска не посчитался", exc_info=True)
+    return group_parts(data, ratings_public=ratings_are_public(chat), url=url, number=number)
+
+
+def group_parts(
+    data: DigestData, *, ratings_public: bool, url: str = "", number: int | None = None
+) -> list[str]:
     """Текст для группы.
 
     Со ссылкой на выпуск — короткий пост: заголовок, новости ссылками, #дайджест.
@@ -107,20 +151,18 @@ def group_parts(data: DigestData, *, ratings_public: bool, url: str = "") -> lis
     свёрнуты под раскрывающиеся цитаты. Кнопок оценки в группе нет.
     """
     if url:
-        return [teaser_html(data, url)]
+        return [teaser_html(data, url, number)]
     if data.heroes and not ratings_public:
         data = dataclasses.replace(data, heroes="")
     return digest_messages(data)
 
 
-def group_preview(digest_payload: dict[str, Any], chat: Chat) -> list[str]:
+async def group_preview(digest_payload: dict[str, Any], chat: Chat) -> list[str]:
     """Как дайджест будет выглядеть в группе — для предпросмотра в админке."""
     if not digest_payload:
         return []
     data = DigestData.from_dict(digest_payload).titled(chat.title)
-    return group_parts(
-        data, ratings_public=ratings_are_public(chat), url=article_url(chat, data.day)
-    )
+    return await post_for_group(data, chat)
 
 
 def can_offer(chat: Chat | None, digest: Any) -> bool:
@@ -162,9 +204,7 @@ async def publish_digest(bot: Any, digest_id: int, *, auto: bool = False) -> Pub
 
     sent: list[int] = []
     try:
-        parts = group_parts(
-            data, ratings_public=ratings_are_public(chat), url=article_url(chat, data.day)
-        )
+        parts = await post_for_group(data, chat)
         for part in parts:
             message = await bot.send_message(
                 chat.tg_id,
