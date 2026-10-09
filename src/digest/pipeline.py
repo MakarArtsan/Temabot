@@ -31,6 +31,9 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TOP_N = 6
 MAX_THREAD_CHARS = 12_000   # длинный тред режем, чтобы не разориться на токенах
+# Длинные обсуждения модель проверяет на склейку разных разговоров (см. map_conversations)
+SPLIT_MIN_MESSAGES = 6
+SPLIT_MIN_PART = 3          # меньше — это реплика в сторону, а не отдельный разговор
 
 # Шум по §4.3 п.2: реакции-репликами. Учитываются в статистике, но не в map-стадии.
 NOISE_WORDS = {
@@ -102,14 +105,9 @@ class DigestResult:
 
 # ------------------------------------------------------------------- map
 
-async def map_thread(
-    thread: Thread, chat: Chat, *, llm: LLMCall = chat_json, lore: str = ""
-) -> tuple[Topic | None, Usage]:
-    """Один тред -> одна тема. Ошибка модели не роняет весь дайджест.
-
-    `lore` — местные мемы и персонажи строками: без них модель не понимает
-    отсылок и пересказывает шутки чата как бессмыслицу.
-    """
+async def _ask_map(
+    thread: Thread, chat: Chat, *, llm: LLMCall, lore: str, allow_split: bool
+) -> tuple[Any, Usage]:
     participants = ", ".join(
         f"{m.tg_user_id} — {m.author_name or '?'}"
         for m in {m.tg_user_id: m for m in thread.messages if m.tg_user_id}.values()
@@ -120,9 +118,11 @@ async def map_thread(
         system += prompts.INTERESTS_HINT.format(profile=profile)
     if lore:
         system += prompts.LORE_HINT.format(lore=lore)
+    if allow_split:
+        system += prompts.MAP_SPLIT_HINT
 
     try:
-        data, usage = await llm(
+        return await llm(
             [
                 {"role": "system", "content": system},
                 {
@@ -140,9 +140,11 @@ async def map_thread(
         log.error("Не удалось разобрать тред %s: %s", thread.root_msg_id, exc)
         raise
 
+
+def _topic_from(data: Any, thread: Thread) -> Topic | None:
     if not isinstance(data, dict) or not (data.get("title") or "").strip():
         # модель сама признала тред пустым
-        return None, usage
+        return None
 
     topic = Topic(
         thread_id=thread.root_msg_id,
@@ -162,7 +164,88 @@ async def map_thread(
         reactions=sum(m.reactions for m in thread.messages),
     )
     topic.participants = sorted(set(topic.participants))
-    return topic, usage
+    return topic
+
+
+async def map_thread(
+    thread: Thread, chat: Chat, *, llm: LLMCall = chat_json, lore: str = ""
+) -> tuple[Topic | None, Usage]:
+    """Один тред -> одна тема. Ошибка модели не роняет весь дайджест.
+
+    `lore` — местные мемы и персонажи строками: без них модель не понимает
+    отсылок и пересказывает шутки чата как бессмыслицу.
+    """
+    data, usage = await _ask_map(thread, chat, llm=llm, lore=lore, allow_split=False)
+    return _topic_from(data, thread), usage
+
+
+def can_split(thread: Thread) -> bool:
+    """Склеить чужие разговоры могло только длинное обсуждение нескольких людей."""
+    return len(thread.messages) >= SPLIT_MIN_MESSAGES and len(thread.participants) >= 2
+
+
+def split_parts(data: Any, thread: Thread) -> list[Thread] | None:
+    """Разговоры, на которые модель разделила тред. None — модель не делила.
+
+    Номера проверяем: только сообщения этого треда, каждое — в одном разговоре.
+    Разговоры короче SPLIT_MIN_PART — реплики в сторону, их отбрасываем.
+    """
+    raw = data.get("split") if isinstance(data, dict) else None
+    if not isinstance(raw, list) or not raw:
+        return None
+    by_id = {m.tg_msg_id: m for m in thread.messages}
+    taken: set[int] = set()
+    parts: list[Thread] = []
+    for group in raw:
+        if not isinstance(group, list):
+            continue
+        ids = []
+        for value in group:
+            try:
+                msg_id = int(str(value))
+            except (TypeError, ValueError):
+                continue
+            if msg_id in by_id and msg_id not in taken:
+                taken.add(msg_id)
+                ids.append(msg_id)
+        if len(ids) < SPLIT_MIN_PART:
+            continue
+        messages = sorted((by_id[i] for i in ids), key=lambda m: (m.date, m.tg_msg_id))
+        parts.append(Thread(
+            chat_id=thread.chat_id, root_msg_id=messages[0].tg_msg_id,
+            messages=messages, topic_id=thread.topic_id,
+        ))
+    return parts
+
+
+async def map_conversations(
+    thread: Thread, chat: Chat, *, llm: LLMCall = chat_json, lore: str = ""
+) -> tuple[list[tuple[Thread, Topic | None]], Usage]:
+    """Тред -> темы. Длинный тред модель сначала проверяет на склейку.
+
+    Программа режет переписку на обсуждения по ответам и времени. В плотном
+    чате, где несколько разговоров идут вперемешку, в одно обсуждение попадают
+    куски чужих — и пересказ сводил разные истории в одну. Если модель видит в
+    треде несколько разговоров, каждый пересказывается отдельно.
+    """
+    allow_split = can_split(thread)
+    data, usage = await _ask_map(thread, chat, llm=llm, lore=lore, allow_split=allow_split)
+    parts = split_parts(data, thread) if allow_split else None
+    if parts is None:
+        return [(thread, _topic_from(data, thread))], usage
+
+    log.info("Тред %s разделён на %s разговор(а)", thread.root_msg_id, len(parts))
+    if not parts:
+        # делить взялась, но номера не сошлись — разбираем целиком, без деления
+        data, extra = await _ask_map(thread, chat, llm=llm, lore=lore, allow_split=False)
+        return [(thread, _topic_from(data, thread))], usage + extra
+
+    result: list[tuple[Thread, Topic | None]] = []
+    for part in parts:
+        data, extra = await _ask_map(part, chat, llm=llm, lore=lore, allow_split=False)
+        usage = usage + extra
+        result.append((part, _topic_from(data, part)))
+    return result, usage
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -446,25 +529,32 @@ async def build_digest(
     pairs: list[tuple[Topic, scoring.Scored]] = []
     mapped = failed = 0
 
+    mapped_threads: list[Thread] = []
     for thread, signals in zip(live, peers, strict=True):
         try:
-            topic, usage = await map_thread(thread, chat, llm=llm, lore=lore)
+            conversations, usage = await map_conversations(thread, chat, llm=llm, lore=lore)
         except Exception:
             # один упавший тред не отменяет остальные, но мы это запомним
             failed += 1
             continue
         mapped += 1
         total_usage = total_usage + usage
-        if topic is None:
-            continue
-
-        result, usage = await score_topic(
-            topic, thread, chat,
-            signals=signals, peers=peers, history=history,
-            recent_topics=recent_items, examples=examples, llm=llm,
-        )
-        total_usage = total_usage + usage
-        pairs.append((topic, result))
+        for part, topic in conversations:
+            mapped_threads.append(part)
+            if topic is None:
+                continue
+            # у отделённого разговора свои сигналы: свои люди, ответы, реакции
+            part_signals = signals if part is thread else collect_signals(
+                part, owner_id=cfg.OWNER_ID,
+                author_weights=authors["weights"], muted_authors=authors["muted"],
+            )
+            result, usage = await score_topic(
+                topic, part, chat,
+                signals=part_signals, peers=peers, history=history,
+                recent_topics=recent_items, examples=examples, llm=llm,
+            )
+            total_usage = total_usage + usage
+            pairs.append((topic, result))
 
     settings = dict(chat.settings or {})
     if top_n is not None:
@@ -490,7 +580,7 @@ async def build_digest(
         chat_title=chat.title or "",
         highlights=highlights,
         topics=selected,
-        unanswered=collect_unanswered(threads, selected),
+        unanswered=collect_unanswered(mapped_threads, selected),
         links=links,
         msg_count=len(messages),
         participants=len({m.tg_user_id for m in messages if m.tg_user_id}),
