@@ -1,0 +1,45 @@
+{% from "_ui.html" import icon, badge %}
+{% set owner_view = owner_view|default(false) %}
+{% macro act(action, label, cls="ghost") -%}
+<button class="btn sm {{ cls }}" hx-post="/kb/{{ item.id }}" hx-target="#kb-{{ item.id }}" hx-swap="outerHTML"
+        {% if action == 'delete' %}hx-confirm="Удалить «{{ item.title }}» из базы насовсем?"{% endif %}
+        hx-vals='{"action":"{{ action }}","csrf_token":"{{ csrf }}"}'>{{ label }}</button>
+{%- endmacro %}
+<details class="kb-item {{ 'missed' if item.archived }}" id="kb-{{ item.id }}" {{ 'open' if open_all|default(false) }}>
+  <summary>
+    <span class="kb-mark" aria-hidden="true">{{ marks.get(item.category, '📌') }}</span>
+    <span class="kb-title">{{ item.title }}</span>
+    {% if item.archived %}{{ badge('в архиве') }}{% endif %}
+  </summary>
+  <div class="kb-body">
+    {% for para in item.body.split('\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
+    <div class="meta">
+      <span>{{ categories.get(item.category, 'Разное') }}</span>
+      {% if item.last_day %}<span>{{ icon('calendar', 'sm') }}{{ item.last_day.strftime('%d.%m.%Y') }}</span>{% endif %}
+      {% for src in (item.sources or [])[:2] %}
+        {% if chat_tg_id and src.msg_id %}<a href="{{ deeplink(chat_tg_id, src.msg_id) }}" target="_blank" rel="noopener noreferrer">откуда {{ icon('external', 'sm') }}</a>{% endif %}
+      {% endfor %}
+    </div>
+    {% if item.tags %}<p class="kb-tags">{% for tag in item.tags %}<span class="score-chip">{{ tag }}</span>{% endfor %}</p>{% endif %}
+    {% if owner_view %}
+      <div class="fb">
+        {% if item.archived %}{{ act('restore', 'Из архива') }}{% else %}{{ act('archive', 'В архив') }}{% endif %}
+        {{ act('delete', 'Удалить', 'danger') }}
+      </div>
+      <details class="more">
+        <summary>Править</summary>
+        <form hx-post="/kb/{{ item.id }}" hx-target="#kb-{{ item.id }}" hx-swap="outerHTML" class="stack" style="margin-top:8px">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="action" value="edit">
+          <input type="text" name="title" value="{{ item.title }}" maxlength="120" aria-label="Вопрос">
+          <textarea name="body" rows="6" aria-label="Ответ">{{ item.body }}</textarea>
+          <select name="category" aria-label="Раздел">
+            {% for key, label in categories.items() %}<option value="{{ key }}" {{ 'selected' if key == item.category }}>{{ label }}</option>{% endfor %}
+          </select>
+          <input type="text" name="tags" value="{{ (item.tags or [])|join(', ') }}" aria-label="Ключевые слова через запятую">
+          <div><button class="btn sm" type="submit">{{ icon('check', 'sm') }}Сохранить</button></div>
+        </form>
+      </details>
+    {% endif %}
+  </div>
+</details>

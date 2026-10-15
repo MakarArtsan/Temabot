@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_ui.html" import icon, badge, empty %}
+{% from "_ui.html" import icon, badge, empty, life_view %}
 {% block title %}Дайджест {{ digest.day.strftime('%d.%m') }}{% endblock %}
 {% block eyebrow %}<a class="eyebrow" href="/digests">{{ icon('back', 'sm') }} Все дайджесты</a>{% endblock %}
 {% block h1 %}{{ chat_name(chat) if chat else 'Дайджест' }} · {{ digest.day.strftime('%d.%m.%Y') }}{% endblock %}
@@ -68,6 +68,18 @@
       <div class="card-head"><h2>Публикация в группе</h2></div>
       {% include "_publish_box.html" %}
     </section>
+    <section class="card">
+      <div class="card-head"><div><h2>Пересобрать</h2>
+        <p class="muted small">Заново разберёт день с нынешними настройками отбора и промптами. Уже
+          разобранное берётся из сохранённого — быстро и почти бесплатно. Не понравился выпуск —
+          пересоберите, посмотрите и тогда публикуйте.</p></div></div>
+      <div id="rebuild-box">
+        <button class="btn ghost" hx-post="/digests/{{ digest.id }}/rebuild" hx-target="#rebuild-box"
+                hx-swap="innerHTML"
+                hx-confirm="Пересобрать дайджест за {{ digest.day.strftime('%d.%m') }}? Ваши оценки тем этого дня (👍 👎) сбросятся."
+                hx-vals='{"csrf_token":"{{ csrf }}"}'>{{ icon('refresh', 'sm') }}Пересобрать дайджест</button>
+      </div>
+    </section>
     <div class="note">{{ icon('info') }}<p>Кнопки под темами учат отбор вашему вкусу:
       «👍 Полезно» — таких тем больше, «👎 Мимо» — меньше, «🔕 Не показывать» — такие не нужны совсем.
       Раз в неделю бот предлагает новые веса на странице «Обучение».</p></div>
@@ -80,6 +92,18 @@
     <p class="muted">Ни одна тема не прошла порог.</p>
   {% endfor %}
 </section>
+
+{% if life and life.headline %}
+<section class="card section">
+  {{ life_view(life) }}
+  {% if in_life %}
+    <details class="more">
+      <summary>Из чего собрана колонка · {{ in_life|length }} {{ plural(in_life|length, 'разговор', 'разговора', 'разговоров') }}</summary>
+      {% for item in in_life %}{{ topic_card(item, true) }}{% endfor %}
+    </details>
+  {% endif %}
+</section>
+{% endif %}
 
 <section class="card">
   <div class="card-head">

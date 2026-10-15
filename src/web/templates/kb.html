@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Полезное{% endblock %}
+{% block h1 %}Полезное{% endblock %}
+{% block lead %}<p class="lead">База лайфхаков, решений и ответов на частые вопросы — нейросети, оплаты, деньги, налоги, договоры. Бот пополняет её каждый вечер по рабочим темам дня и дополняет старые записи, а не плодит новые. Участники ищут по ней на своей странице. Лишнее — в архив.</p>{% endblock %}
+{% block content %}
+{% if not chat %}
+  <div class="card">{{ empty('Групп пока нет', '', 'groups') }}</div>
+{% else %}
+<div class="card">
+  <div class="rows">
+    {% if chats|length > 1 %}
+    <form method="get" action="/kb" class="row">
+      <label class="text title" for="kb-chat">Группа</label>
+      <div class="control"><select id="kb-chat" name="chat" onchange="this.form.submit()">
+        {% for c in chats %}<option value="{{ c.id }}" {{ 'selected' if c.id == chat.id }}>{{ chat_name(c) }}</option>{% endfor %}
+      </select></div>
+    </form>
+    {% endif %}
+    <form method="post" action="/kb/settings/{{ chat.id }}" class="row">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="enabled" value="{{ 0 if enabled else 1 }}">
+      <div class="text">
+        <div class="title">Пополнять базу по итогам дня</div>
+        <div class="hint">Один вызов модели в день, по рабочим темам — в том числе тем, что не влезли в выпуск.</div>
+      </div>
+      <div class="control"><button class="switch" role="switch" type="submit" aria-label="Пополнять базу" aria-checked="{{ 'true' if enabled else 'false' }}"></button></div>
+    </form>
+  </div>
+</div>
+
+<section class="card">
+  {% with action='/kb', hidden_chat=chat.id %}{% include "_kb_search.html" %}{% endwith %}
+  <div class="btn-row" style="margin-top:10px">
+    {% if archived %}<a class="btn ghost sm" href="/kb?chat={{ chat.id }}">← Действующие</a>
+    {% else %}<a class="btn ghost sm" href="/kb?chat={{ chat.id }}&archived=1">🗄 Архив</a>{% endif %}
+    <span class="muted small">{{ rows|length }} {{ plural(rows|length, 'запись', 'записи', 'записей') }}</span>
+  </div>
+</section>
+
+{% if rows %}
+<section class="card">
+  {% set chat_tg_id = chat.tg_id %}{% set owner_view = true %}
+  {% set open_all = q and rows|length <= 5 %}
+  {% for item in rows %}{% include "_kb_item.html" %}{% endfor %}
+</section>
+{% else %}
+  <div class="card">{{ empty('Ничего не нашлось' if q or cat else ('Архив пуст' if archived else 'База пока пуста'), 'Попробуйте другое слово.' if q else 'Она начнёт пополняться с ближайшего вечернего дайджеста.', 'search') }}</div>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -252,12 +252,28 @@ def test_offtopic_has_its_own_limit_and_does_not_crowd_out_work():
     work = [(f"w{i}", scored("insight", usefulness=8, interest=0)) for i in range(3)]
     fun = [(f"f{i}", scored("fun", usefulness=0, interest=10)) for i in range(4)]
 
-    shown, missed = scoring.select(work + fun, settings={"top_n": 3, "top_n_offtopic": 2})
+    old_style = {"life_section": False}
+    shown, missed = scoring.select(
+        work + fun, settings={"top_n": 3, "top_n_offtopic": 2, **old_style}
+    )
 
     assert sorted(shown) == ["f0", "f1", "w0", "w1", "w2"]
     assert sorted(missed) == ["f2", "f3"]
-    shown, _ = scoring.select(work + fun, settings={"top_n": 3, "top_n_offtopic": 0})
+    shown, _ = scoring.select(
+        work + fun, settings={"top_n": 3, "top_n_offtopic": 0, **old_style}
+    )
     assert sorted(shown) == ["w0", "w1", "w2"], "0 — раздел выключен"
+
+
+def test_with_life_column_offtopic_goes_to_it_not_to_the_list():
+    """По умолчанию весь оффтоп — материал «Жизни чата», в список тем он не идёт."""
+    work = [(f"w{i}", scored("insight", usefulness=8, interest=0)) for i in range(3)]
+    other = [("fun", scored("fun", usefulness=0, interest=10)),
+             ("drama", scored("drama", usefulness=0, interest=9)),
+             ("chat", scored("other", usefulness=0, interest=5))]
+    shown, missed = scoring.select(work + other, settings={"top_n": 5, "top_n_offtopic": 3})
+    assert sorted(shown) == ["w0", "w1", "w2"]
+    assert sorted(missed) == ["chat", "drama", "fun"]
 
 
 # ================================================================== лор

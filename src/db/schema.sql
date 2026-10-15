@@ -263,6 +263,29 @@ create table if not exists llm_cache (
 );
 create index if not exists llm_cache_created_idx on llm_cache (created_at);
 
+-- База полезного (решение владельца, 15.10): лайфхаки, решения проблем, ответы на
+-- частые вопросы — ИИ, оплаты, деньги, налоги. Пополняется по итогам дня, похожее
+-- дополняется, а не дублируется. Владелец архивирует лишнее; участники ищут.
+create table if not exists knowledge (
+  id          bigserial primary key,
+  chat_id     bigint references chats(id) on delete cascade,
+  title       text not null,              -- вопрос или название приёма
+  body        text not null default '',   -- ответ, инструкция
+  category    text not null default 'other',
+  tags        text[] not null default '{}',
+  sources     jsonb default '[]',         -- [{"day": ..., "msg_id": ...}]
+  first_day   date,
+  last_day    date,
+  mentions    int default 1,
+  archived    boolean default false,
+  updated_at  timestamptz default now()
+);
+create unique index if not exists knowledge_chat_title on knowledge (chat_id, lower(title));
+-- метки в индекс не входят (array_to_string не IMMUTABLE) — их ищет ilike
+create index if not exists knowledge_fts on knowledge using gin (
+  to_tsvector('russian', title || ' ' || body)
+);
+
 -- ------------------------------------------------- приватность (TZ §9)
 
 -- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями
@@ -279,7 +302,7 @@ begin
   foreach t in array array[
     'chats', 'authors', 'copier_blocklist', 'settings', 'llm_usage', 'messages',
     'chunks', 'digests', 'digest_items', 'feedback', 'qa_log', 'thread_contrib',
-    'author_stats_daily', 'state', 'chat_members', 'lore', 'llm_cache'
+    'author_stats_daily', 'state', 'chat_members', 'lore', 'llm_cache', 'knowledge'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;

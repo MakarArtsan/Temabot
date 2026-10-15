@@ -43,7 +43,7 @@ class PublishResult:
 
 def is_empty(data: DigestData) -> bool:
     """«За день ничего заметного» в группу не шлём: это шум, а не новость."""
-    return not data.topics and not data.highlights
+    return not data.topics and not data.highlights and not data.life
 
 
 def ratings_are_public(chat: Chat) -> bool:
@@ -287,3 +287,15 @@ async def unpublish_digest(bot: Any, digest_id: int) -> PublishResult:
             )
     await repo.release_digest_publication(digest_id)
     return PublishResult(True, f"Убрал из «{chat.title or chat.tg_id}»")
+
+
+async def republish_digest(bot: Any, digest_id: int) -> PublishResult:
+    """Заменить пост в группе пересобранным дайджестом: убрать старый, выложить новый.
+
+    Если старый убрать не вышло (прошло больше 48 часов), новый не выкладываем —
+    иначе в группе окажутся два выпуска за один день.
+    """
+    removed = await unpublish_digest(bot, digest_id)
+    if not removed.ok:
+        return PublishResult(False, f"{removed.text}. Новый пост не публиковал.")
+    return await publish_digest(bot, digest_id)

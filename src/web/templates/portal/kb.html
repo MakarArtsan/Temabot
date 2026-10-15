@@ -1,0 +1,21 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Полезное · {{ chat_name(chat) }}{% endblock %}
+{% block content %}
+{% include "portal/_group_head.html" %}
+<div class="page-head"><div><h1>Полезное</h1>
+  <p class="lead">Лайфхаки, решения и ответы на частые вопросы из переписки: нейросети, оплаты, деньги, налоги, договоры. Пополняется каждый вечер.</p></div></div>
+<section class="card">
+  {% with action='/g/' ~ chat.id ~ '/kb', hidden_chat=none, archived=false %}{% include "_kb_search.html" %}{% endwith %}
+</section>
+{% if rows %}
+<section class="card">
+  <div class="card-head"><h2>{{ 'Нашлось' if q or cat else 'Свежее' }}</h2><span class="muted small">{{ rows|length }}</span></div>
+  {% set chat_tg_id = chat.tg_id %}
+  {% set open_all = q and rows|length <= 5 %}
+  {% for item in rows %}{% include "_kb_item.html" %}{% endfor %}
+</section>
+{% else %}
+  <div class="card">{{ empty('Ничего не нашлось' if q or cat else 'Здесь пока пусто', 'Попробуйте другое слово или раздел.' if q or cat else 'База начнёт пополняться с ближайших выпусков.', 'search') }}</div>
+{% endif %}
+{% endblock %}

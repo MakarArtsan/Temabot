@@ -33,6 +33,7 @@ from src.digest.publish import (
     full_post_reason,
     group_preview,
     publish_digest,
+    republish_digest,
     unpublish_digest,
 )
 from src.digest.render import deeplink
@@ -542,6 +543,7 @@ async def selection_page(
             "default_threshold": DEFAULT_THRESHOLD,
             "top_n": settings.get("top_n", DEFAULT_TOP_N),
             "top_n_offtopic": settings.get("top_n_offtopic", DEFAULT_TOP_N_OFFTOPIC),
+            "life_section": settings.get("life_section", True),
             "yesterday": local_today() - timedelta(days=1),
         },
     )
@@ -568,6 +570,9 @@ async def selection_save(
         patch["top_n"] = int(float(str(form.get("top_n", 6))))
         if "top_n_offtopic" in form:
             patch["top_n_offtopic"] = int(float(str(form.get("top_n_offtopic"))))
+        # переключатель приходит только включённым; форма отбора всегда шлёт маркер
+        if "life_section_shown" in form:
+            patch["life_section"] = form.get("life_section") == "1"
     except ValueError:
         raise HTTPException(400, "Недопустимое число в настройках") from None
     patch["weights"] = weights
@@ -771,6 +776,10 @@ async def digest_detail(
     chat = await repo.get_chat_by_id(digest.chat_id)
     items = await repo.get_digest_items(digest_id)
     await remember_site_now(request)   # чтобы предпросмотр сразу был коротким постом
+    life = dict((digest.payload or {}).get("life") or {})
+    life_ids = {
+        int(i) for episode in life.get("episodes") or [] for i in episode.get("thread_ids") or []
+    }
     return render(
         request,
         "digest_detail.html",
@@ -782,7 +791,9 @@ async def digest_detail(
             "full_reason": await full_post_reason(chat) if chat else "",
             "items": items,
             "shown": [i for i in items if i["shown"]],
-            "missed": [i for i in items if not i["shown"]],
+            "life": life,
+            "in_life": [i for i in items if not i["shown"] and i["thread_id"] in life_ids],
+            "missed": [i for i in items if not i["shown"] and i["thread_id"] not in life_ids],
         },
     )
 
@@ -809,6 +820,35 @@ async def digest_publish(
     await remember_site_now(request)
     result = await with_bot(lambda bot: publish_digest(bot, digest_id))
     return await _publish_box(request, digest_id, result)
+
+
+@app.post("/digests/{digest_id}/republish", response_class=HTMLResponse)
+async def digest_republish(
+    request: Request, digest_id: int, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Пересобранный дайджест — в группу вместо старого поста."""
+    auth.check_csrf(request, csrf_token)
+    await remember_site_now(request)
+    result = await with_bot(lambda bot: republish_digest(bot, digest_id))
+    return await _publish_box(request, digest_id, result)
+
+
+@app.post("/digests/{digest_id}/rebuild", response_class=HTMLResponse)
+async def digest_rebuild(
+    request: Request, digest_id: int, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Пересобрать день заново — в фоне; уже разобранное берётся из кэша модели."""
+    auth.check_csrf(request, csrf_token)
+    digest = await repo.get_digest_by_id(digest_id)
+    if digest is None:
+        raise HTTPException(404, "Дайджест не найден")
+    chat = await repo.get_chat_by_id(digest.chat_id)
+    if chat is None:
+        raise HTTPException(404, "Группа не найдена")
+    job = launch_digest(chat, digest.day)
+    return render(request, "_job.html", {"job": job, "view": "digest"})
 
 
 @app.post("/digests/{digest_id}/unpublish", response_class=HTMLResponse)
@@ -996,6 +1036,82 @@ async def ratings_recalc(
     return RedirectResponse("/ratings", status_code=303)
 
 
+# ------------------------------------------------------------- база полезного
+
+@app.get("/kb", response_class=HTMLResponse)
+async def kb_page(
+    request: Request, chat: int | None = None, q: str = "", cat: str = "",
+    archived: int = 0, _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """База полезного: поиск и модерация — в архив, правка, удаление."""
+    from src.digest import knowledge as kb
+
+    chats = await repo.list_chats()
+    current = next((c for c in chats if c.id == chat), chats[0] if chats else None)
+    cat = cat if cat in kb.CATEGORIES else ""
+    rows: list[dict[str, Any]] = []
+    if current:
+        rows = await repo.search_knowledge(
+            current.id, q[:100], category=cat, include_archived=bool(archived), limit=200
+        )
+        if archived:
+            rows = [r for r in rows if r["archived"]]
+    return render(request, "kb.html", {
+        "active": "kb", "chats": chats, "chat": current, "rows": rows, "q": q[:100],
+        "cat": cat, "archived": bool(archived), "categories": kb.CATEGORIES,
+        "marks": kb.CATEGORY_MARKS, "enabled": kb.enabled(current) if current else False,
+    })
+
+
+@app.post("/kb/{knowledge_id}", response_class=HTMLResponse)
+async def kb_update(
+    request: Request, knowledge_id: int, action: str = Form(...), csrf_token: str = Form(""),
+    title: str = Form(""), body: str = Form(""), category: str = Form("other"),
+    tags: str = Form(""), _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    from src.digest import knowledge as kb
+
+    auth.check_csrf(request, csrf_token)
+    current = await repo.get_knowledge(knowledge_id)
+    if current is None:
+        raise HTTPException(404, "Запись не найдена")
+    if action == "delete":
+        await repo.delete_knowledge(knowledge_id)
+        return HTMLResponse("")
+    if action in {"archive", "restore"}:
+        row = await repo.set_knowledge_archived(knowledge_id, action == "archive")
+    elif action == "edit":
+        if not title.strip() or not body.strip():
+            raise HTTPException(400, "Нужны и вопрос, и ответ")
+        try:
+            row = await repo.edit_knowledge(
+                knowledge_id, title=title.strip()[:kb.TITLE_MAX], body=body.strip()[:kb.BODY_MAX],
+                category=category if category in kb.CATEGORIES else "other",
+                tags=[t.strip().lower()[:40] for t in tags.split(",") if t.strip()][:10],
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+    else:
+        raise HTTPException(400, "Неизвестное действие")
+    if row is None:
+        raise HTTPException(404, "Запись не найдена")
+    chat = await repo.get_chat_by_id(int(row["chat_id"]))
+    return render(request, "_kb_item.html", {
+        "item": row, "chat_tg_id": chat.tg_id if chat else None,
+        "categories": kb.CATEGORIES, "marks": kb.CATEGORY_MARKS, "owner_view": True,
+    })
+
+
+@app.post("/kb/settings/{chat_id}")
+async def kb_settings(
+    request: Request, chat_id: int, enabled: str = Form("0"), csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> Response:
+    auth.check_csrf(request, csrf_token)
+    await repo.update_chat_settings(chat_id, {"knowledge": {"enabled": enabled == "1"}})
+    return RedirectResponse(f"/kb?chat={chat_id}", status_code=303)
+
+
 # ------------------------------------------------------------------ лор чата
 
 @app.get("/lore", response_class=HTMLResponse)
@@ -1008,8 +1124,9 @@ async def lore_page(
     chats = await repo.list_chats()
     current = next((c for c in chats if c.id == chat), chats[0] if chats else None)
     rows = await repo.list_lore(current.id, include_hidden=True) if current else []
+    active = [r for r in rows if not r["hidden"]]
     groups = [
-        (kind, lore_mod.KIND_MARKS[kind], title, [r for r in rows if r["kind"] == kind])
+        (kind, lore_mod.KIND_MARKS[kind], title, [r for r in active if r["kind"] == kind])
         for kind, title in (
             ("meme", "Мемы и словечки"), ("legend", "Легендарные персонажи"),
             ("story", "Истории"), ("role", "Роли участников"),
@@ -1023,6 +1140,9 @@ async def lore_page(
             "chats": chats,
             "chat": current,
             "groups": groups,
+            "archived": [r for r in rows if r["hidden"]],
+            "peers": active,
+            "fresh_since": local_today() - timedelta(days=3),
             "total": len(rows),
             "enabled": lore_mod.enabled(current) if current else False,
         },
@@ -1032,19 +1152,55 @@ async def lore_page(
 @app.post("/lore/{lore_id}", response_class=HTMLResponse)
 async def lore_update(
     request: Request, lore_id: int, action: str = Form(...), csrf_token: str = Form(""),
+    title: str = Form(""), body: str = Form(""), into: int = Form(0),
     _: dict = Depends(auth.require_owner),
-) -> HTMLResponse:
-    """Скрыть, вернуть или удалить запись лора."""
+) -> Response:
+    """Модерация лора: в архив и обратно, правка, слияние, удаление."""
+    from src.digest import lore as lore_mod
+
     auth.check_csrf(request, csrf_token)
+    current = await repo.get_lore(lore_id)
+    if current is None:
+        raise HTTPException(404, "Запись не найдена")
+    chat_id = int(current["chat_id"])
+
     if action == "delete":
         await repo.delete_lore(lore_id)
         return HTMLResponse("")
-    if action not in {"hide", "show"}:
+    if action in {"hide", "show"}:
+        row = await repo.set_lore_hidden(lore_id, action == "hide")
+    elif action == "edit":
+        title, body = title.strip(), body.strip()
+        if not title:
+            raise HTTPException(400, "Название не может быть пустым")
+        try:
+            row = await repo.edit_lore(
+                lore_id, title=title[:120], body=body[:lore_mod.BODY_MAX]
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+    elif action == "merge":
+        target = await repo.get_lore(into)
+        if target is None or int(target["chat_id"]) != chat_id or into == lore_id:
+            raise HTTPException(400, "Выберите запись этой же группы")
+        try:
+            merged = await lore_mod.merge_entries(into, lore_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if merged is None:
+            raise HTTPException(400, "Не получилось объединить")
+        # на странице поменялись две записи — проще показать её заново
+        return Response(status_code=204, headers={"HX-Redirect": f"/lore?chat={chat_id}"})
+    else:
         raise HTTPException(400, "Неизвестное действие")
-    row = await repo.set_lore_hidden(lore_id, action == "hide")
     if row is None:
         raise HTTPException(404, "Запись не найдена")
-    return render(request, "_lore_item.html", {"item": row})
+    chat = await repo.get_chat_by_id(chat_id)
+    peers = [r for r in await repo.list_lore(chat_id) if r["id"] != lore_id]
+    return render(request, "_lore_item.html", {
+        "item": row, "peers": peers, "chat_tg_id": chat.tg_id if chat else None,
+        "fresh_since": local_today() - timedelta(days=3),
+    })
 
 
 @app.post("/lore/settings/{chat_id}")

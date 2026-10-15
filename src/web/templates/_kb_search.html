@@ -1,0 +1,13 @@
+{% from "_ui.html" import icon %}
+<form method="get" action="{{ action }}" class="kb-search" role="search">
+  {% if hidden_chat %}<input type="hidden" name="chat" value="{{ hidden_chat }}">{% endif %}
+  {% if archived %}<input type="hidden" name="archived" value="1">{% endif %}
+  <input type="search" name="q" value="{{ q }}" placeholder="Например: Suno, НПД, оплата Midjourney, договор" aria-label="Поиск по базе">
+  <button class="btn" type="submit">{{ icon('search', 'sm') }}Найти</button>
+</form>
+<div class="seg kb-cats" role="navigation" aria-label="Разделы">
+  <a class="{{ 'on' if not cat }}" href="{{ action }}?{{ ('chat=' ~ hidden_chat ~ '&') if hidden_chat }}q={{ q|urlencode }}{{ '&archived=1' if archived }}">Все</a>
+  {% for key, label in categories.items() %}
+    <a class="{{ 'on' if cat == key }}" href="{{ action }}?{{ ('chat=' ~ hidden_chat ~ '&') if hidden_chat }}cat={{ key }}&q={{ q|urlencode }}{{ '&archived=1' if archived }}">{{ marks[key] }} {{ label }}</a>
+  {% endfor %}
+</div>

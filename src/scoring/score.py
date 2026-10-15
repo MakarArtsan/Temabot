@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.digest.render import OFFTOPIC_KINDS
+from src.digest.render import LIFE_KINDS, OFFTOPIC_KINDS
 from src.scoring.llm_rubric import Rubric
 
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -152,12 +152,16 @@ def select(
     limit = _int_setting(settings, "top_n", DEFAULT_TOP_N)
     offtopic_limit = _int_setting(settings, "top_n_offtopic", DEFAULT_TOP_N_OFFTOPIC)
     ordered = sorted(scored, key=lambda pair: pair[1].score, reverse=True)
+    if life_section(settings):
+        # всё не о работе уходит в колонку «Жизнь чата», а не в список тем
+        offtopic_limit = 0
 
     shown: list[Any] = []
     missed: list[Any] = []
     work = offtopic = 0
     for item, result in ordered:
-        is_offtopic = result.features.get("kind") in OFFTOPIC_KINDS
+        kind = result.features.get("kind")
+        is_offtopic = kind in OFFTOPIC_KINDS or (life_section(settings) and kind in LIFE_KINDS)
         room = offtopic < offtopic_limit if is_offtopic else work < limit
         if result.passed and room:
             shown.append(item)
@@ -168,6 +172,11 @@ def select(
         else:
             missed.append(item)
     return shown, missed
+
+
+def life_section(settings: dict[str, Any] | None) -> bool:
+    """Колонка «Жизнь чата» вместо списка оффтоп-тем. Включена по умолчанию."""
+    return bool((settings or {}).get("life_section", True))
 
 
 def _int_setting(settings: dict[str, Any] | None, key: str, default: int) -> int:

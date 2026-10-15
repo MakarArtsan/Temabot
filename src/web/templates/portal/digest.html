@@ -1,5 +1,5 @@
 {% extends "portal/base.html" %}
-{% from "_ui.html" import icon, badge, digest_view %}
+{% from "_ui.html" import icon, badge, digest_view, life_view %}
 {% block title %}{{ article.headline or ('Выпуск ' ~ day.strftime('%d.%m')) }} · {{ chat_name(chat) }}{% endblock %}
 {% block content %}
 {% include "portal/_group_head.html" %}
@@ -11,7 +11,7 @@
   </div>
 </div>
 
-{% if stories %}
+{% if stories or data.life %}
 <article class="issue">
   <header class="issue-head">
     <p class="kicker">{% if number %}Выпуск #{{ number }} · {% endif %}{{ chat_name(chat) }} · {{ weekday(day) }}, {{ day.strftime('%d.%m.%Y') }}</p>
@@ -56,6 +56,8 @@
       </div>
     </details>
   {% endfor %}
+
+  {{ life_view(data.life) }}
 
   {% if data.unanswered %}
   <section class="card">

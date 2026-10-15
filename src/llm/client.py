@@ -23,8 +23,12 @@ _client: Any = None
 # Ответы на разбор дня кэшируются: прерванная сборка (перезапуск, выкладка)
 # продолжается за секунды и без повторной оплаты. Вопросы к боту не кэшируются —
 # там один и тот же вопрос через день должен получить свежий ответ.
-CACHED_PURPOSES = frozenset({"summary", "score", "article"})
+CACHED_PURPOSES = frozenset({"summary", "score", "article", "life", "knowledge"})
 CACHE_DAYS = 14
+# Длинные ответы (статья, колонка, база, лор) модель пишет минутами; в медленные
+# дни 120 секунд на них не хватает, и выпуск выходил бы без статьи и колонки
+LONG_PURPOSES = frozenset({"article", "life", "knowledge", "lore"})
+LONG_TIMEOUT_SEC = 300.0
 
 # ```json ... ``` — модели любят заворачивать ответ в разметку, даже когда просишь не надо
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
@@ -142,7 +146,9 @@ async def chat(
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
-            response = await client.chat.completions.create(**kwargs)
+            target = client.with_options(timeout=LONG_TIMEOUT_SEC) if purpose in LONG_PURPOSES \
+                else client
+            response = await target.chat.completions.create(**kwargs)
             break
         except Exception as exc:
             last_error = exc

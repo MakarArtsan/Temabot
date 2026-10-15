@@ -29,8 +29,9 @@ KIND_MARKS = {"meme": "😄", "legend": "🦸", "story": "📖", "role": "🎭"}
 CONTEXT_LIMIT = 20       # сколько записей подмешивать в разбор каждого треда
 PROMPT_LIMIT = 60        # сколько записей показывать модели при обновлении
 MAX_ADDS_PER_DAY = 5
+MAX_MERGES_PER_DAY = 3
 TITLE_MAX = 60
-BODY_MAX = 400
+BODY_MAX = 1500          # вики-статья: история дополняется, а не плодится заново
 
 
 def enabled(chat: Chat) -> bool:
@@ -68,8 +69,10 @@ def _topic_line(topic: Topic) -> str:
 
 
 def _existing_line(row: dict[str, Any]) -> str:
-    body = str(row.get("body") or "")[:160]
-    return f"{row['id']}. [{row['kind']}] {row['title']}" + (f" — {body}" if body else "")
+    body = str(row.get("body") or "")[:300]
+    archived = " [архив]" if row.get("hidden") else ""
+    return (f"{row['id']}. [{row['kind']}]{archived} {row['title']}"
+            + (f" — {body}" if body else ""))
 
 
 async def update_lore(
@@ -136,9 +139,69 @@ async def update_lore(
         body = str(item.get("body") or "").strip()[:BODY_MAX]
         await repo.touch_lore(lore_id, chat.id, day=day, body=body)
 
-    if added:
-        log.info("Лор чата %s пополнился: %s", chat.tg_id, ", ".join(added))
+    active = {int(r["id"]): r for r in existing if not r.get("hidden")}
+    merged = 0
+    for item in data.get("merge") or []:
+        if merged >= MAX_MERGES_PER_DAY or not isinstance(item, dict):
+            continue
+        try:
+            into_id, from_id = int(str(item.get("into"))), int(str(item.get("from")))
+        except (TypeError, ValueError):
+            continue
+        target, source = active.get(into_id), active.get(from_id)
+        # сливаем только живые записи одного вида; архив владельца не трогаем
+        if target is None or source is None or into_id == from_id:
+            continue
+        if target["kind"] != source["kind"]:
+            continue
+        body = str(item.get("body") or "").strip()[:BODY_MAX] or _joined(target, source)
+        try:
+            if await repo.merge_lore(into_id, from_id, title=target["title"], body=body):
+                merged += 1
+                active.pop(from_id, None)
+        except ValueError:
+            continue
+
+    if added or merged:
+        log.info("Лор чата %s: добавлено %s, слито %s", chat.tg_id, ", ".join(added), merged)
     return added
+
+
+def _joined(target: dict[str, Any], source: dict[str, Any]) -> str:
+    """Запасной текст слияния, если модель не помогла: оба описания подряд."""
+    parts = [str(target.get("body") or "").strip(), str(source.get("body") or "").strip()]
+    return " ".join(p for p in parts if p)[:BODY_MAX]
+
+
+async def merge_entries(
+    into_id: int, from_id: int, *, llm: Any = chat_json
+) -> dict[str, Any] | None:
+    """Владелец сливает две записи: модель сводит описания в одну статью.
+
+    Если модель недоступна — описания просто ставятся подряд, ничего не теряется.
+    """
+    target, source = await repo.get_lore(into_id), await repo.get_lore(from_id)
+    if target is None or source is None or target["chat_id"] != source["chat_id"]:
+        return None
+    title, body = str(target["title"]), _joined(target, source)
+    try:
+        data, _usage = await llm(
+            [
+                {"role": "system", "content": prompts.LORE_MERGE_SYSTEM},
+                {"role": "user", "content": prompts.LORE_MERGE_USER.format(
+                    title=target["title"], body=target.get("body") or "",
+                    other_title=source["title"], other_body=source.get("body") or "",
+                )},
+            ],
+            purpose="lore",
+            chat_id=int(target["chat_id"]),
+        )
+        if isinstance(data, dict):
+            title = str(data.get("title") or title).strip()[:TITLE_MAX + 40] or title
+            body = str(data.get("body") or body).strip()[:BODY_MAX] or body
+    except Exception:
+        log.warning("Модель не свела записи лора — ставлю описания подряд", exc_info=True)
+    return await repo.merge_lore(into_id, from_id, title=title, body=body)
 
 
 def _clean_add(

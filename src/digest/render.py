@@ -147,6 +147,8 @@ class DigestData:
     heroes: str = ""          # строка «🏅 Герои дня» (TZ §4.10)
     # выпуск-статья для сайта: {headline, lead, teaser: [...], stories: [...]}
     article: dict[str, Any] = field(default_factory=dict)
+    # «Жизнь чата»: {headline, lead, episodes: [{title, text, thread_ids}], cast: [...]}
+    life: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,6 +165,7 @@ class DigestData:
             "low_value_count": self.low_value_count,
             "heroes": self.heroes,
             "article": self.article,
+            "life": self.life,
         }
 
     def titled(self, title: str | None) -> DigestData:
@@ -193,12 +196,16 @@ class DigestData:
             low_value_count=int(data.get("low_value_count", 0)),
             heroes=str(data.get("heroes") or ""),
             article=dict(data.get("article") or {}),
+            life=dict(data.get("life") or {}),
         )
 
 
 # ------------------------------------------------------------------ вид темы
 
 OFFTOPIC_KINDS = frozenset({"life", "fun"})
+# Всё, чем чат жил помимо работы, — материал для колонки «Жизнь чата»
+LIFE_KINDS = frozenset({"life", "fun", "drama", "other"})
+LIFE_ANCHOR = "life"
 
 KIND_MARKS = {
     "decision": "🟢",
@@ -279,7 +286,7 @@ def render(data: DigestData) -> str:
     bold = lambda t: f"*{esc_md(t)}*"  # noqa: E731
     lines: list[str] = [bold(f"Дайджест «{title}» за {data.day:%d.%m.%Y}"), ""]
 
-    if not data.topics and not data.highlights:
+    if not data.topics and not data.highlights and not data.life:
         lines.append("За день ничего заметного не обсуждали.")
         lines.append(_stats_line(data, esc_md))
         return "\n".join(lines).strip()
@@ -298,6 +305,15 @@ def render(data: DigestData) -> str:
         for topic in topics:
             lines.append(f"{KIND_MARKS.get(topic.kind, '💬')} {bold(topic.title)}")
             lines += _topic_body(topic, data.chat_tg_id, link=_md_link, plain=esc_md)
+            lines.append("")
+
+    if data.life:
+        lines += [bold("☕ Жизнь чата: " + str(data.life.get("headline") or "")), ""]
+        if data.life.get("lead"):
+            lines += [esc_md(str(data.life["lead"])), ""]
+        for episode in data.life.get("episodes") or []:
+            lines.append(bold(str(episode.get("title") or "")))
+            lines += [esc_md(p) for p in _paragraphs(str(episode.get("text") or ""))]
             lines.append("")
 
     if data.unanswered:
@@ -380,7 +396,7 @@ def digest_blocks(data: DigestData, limit: int = TELEGRAM_LIMIT) -> list[str]:
     title = data.chat_title or str(data.chat_tg_id)
     head = [f"<b>📰 Дайджест «{esc_html(title)}» за {data.day:%d.%m.%Y}</b>"]
 
-    if not data.topics and not data.highlights:
+    if not data.topics and not data.highlights and not data.life:
         head += ["", "За день ничего заметного не обсуждали."]
         tail = [esc_html(data.heroes)] if data.heroes else []
         return ["\n".join(head), *tail, _stats_line(data, esc_html)]
@@ -395,6 +411,7 @@ def digest_blocks(data: DigestData, limit: int = TELEGRAM_LIMIT) -> list[str]:
     if offtopic:
         blocks.append("☕ <b>Не по делу, но интересно</b>")
         blocks += [_topic_html(t, data.chat_tg_id, limit) for t in offtopic]
+    blocks += life_blocks(data, limit)
 
     if data.unanswered:
         items = [
@@ -409,6 +426,31 @@ def digest_blocks(data: DigestData, limit: int = TELEGRAM_LIMIT) -> list[str]:
     tail = [esc_html(data.heroes)] if data.heroes else []
     tail.append(_stats_line(data, esc_html))
     blocks.append("\n\n".join(tail))
+    return blocks
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in text.split("\n\n") if p.strip()]
+
+
+def life_blocks(data: DigestData, limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """«Жизнь чата»: заголовок колонки с подводкой, эпизоды — под раскрывающимися цитатами."""
+    life = data.life or {}
+    headline = str(life.get("headline") or "")
+    if not headline:
+        return []
+    head = [f"☕ <b>Жизнь чата: {esc_html(headline)}</b>"]
+    if life.get("lead"):
+        head.append(esc_html(str(life["lead"])))
+    blocks = ["\n".join(head)]
+    for episode in life.get("episodes") or []:
+        title = esc_html(str(episode.get("title") or ""))
+        body = [esc_html(p) for p in _paragraphs(str(episode.get("text") or ""))]
+        block = f"🔎 <b>{title}</b>\n" + _expandable(body or [""])
+        while len(block) > limit - 200 and len(body) > 1:   # один эпизод — одно сообщение
+            body = body[:-1]
+            block = f"🔎 <b>{title}</b>\n" + _expandable(body)
+        blocks.append(block[: limit - 200] if len(block) > limit - 200 else block)
     return blocks
 
 
@@ -474,6 +516,11 @@ def teaser_html(data: DigestData, url: str, number: int | None = None) -> str:
         body = (body + " " if body else "") + f"Плюс {_join_ru(also)}."
     if body:
         lines += ["", esc_html(body)]
+    life_headline = str((data.life or {}).get("headline") or "")
+    if life_headline:
+        life_title = f"Жизнь чата: {life_headline}"
+        life_link = _html_link(life_title, f"{url}#{LIFE_ANCHOR}") if url else esc_html(life_title)
+        lines += ["", f"☕ {life_link}"]
     if url:   # без сайта для участников — только анонс, без ссылки в никуда
         lines += ["", _html_link("Читать выпуск на сайте →", url)]
     lines += ["", HASHTAG]

@@ -132,7 +132,8 @@ async def page_context(viewer: Viewer, chat: Chat, tab: str) -> dict[str, Any]:
     """Общее для всех страниц группы: вкладки нижней панели и кто смотрит."""
     extras = extras_visible(chat, viewer)
     tabs = [("overview", f"/g/{chat.id}", "home", "Обзор"),
-            ("digests", f"/g/{chat.id}/digests", "digest", "Выпуски")]
+            ("digests", f"/g/{chat.id}/digests", "digest", "Выпуски"),
+            ("kb", f"/g/{chat.id}/kb", "search", "Полезное")]
     if extras:
         tabs += [("ratings", f"/g/{chat.id}/ratings", "trophy", "Рейтинги"),
                  ("lore", f"/g/{chat.id}/lore", "book", "Лор")]
@@ -250,6 +251,22 @@ async def portal_digest(request: Request, chat_id: int, day: str) -> HTMLRespons
         next_day=min((d for d in days if d > target), default=None),
     )
     return render(request, "portal/digest.html", context)
+
+
+@router.get("/g/{chat_id}/kb", response_class=HTMLResponse)
+async def portal_kb(request: Request, chat_id: int, q: str = "", cat: str = "") -> HTMLResponse:
+    """База полезного для участников: поиск по ключевым словам, без архива и правок."""
+    from src.digest import knowledge as kb
+
+    viewer, chat = await open_chat(request, chat_id)
+    context = await page_context(viewer, chat, "kb")
+    q = q.strip()[:100]
+    cat = cat if cat in kb.CATEGORIES else ""
+    context.update(
+        rows=await repo.search_knowledge(chat.id, q, category=cat, limit=100),
+        q=q, cat=cat, categories=kb.CATEGORIES, marks=kb.CATEGORY_MARKS,
+    )
+    return render(request, "portal/kb.html", context)
 
 
 @router.get("/g/{chat_id}/lore", response_class=HTMLResponse)

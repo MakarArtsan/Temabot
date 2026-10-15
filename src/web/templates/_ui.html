@@ -42,8 +42,24 @@
 {%- endmacro %}
 
 {# Дайджест для чтения: карточки, а не текст из Telegram. Без оценок и признаков. #}
+{% macro life_view(life) -%}
+{% if life and life.headline %}
+<section class="life" id="life">
+  <p class="kicker">☕ Жизнь чата</p>
+  <h2 class="life-title">{{ life.headline }}</h2>
+  {% if life.lead %}<p class="lead-text">{{ life.lead }}</p>{% endif %}
+  {% for episode in life.episodes or [] %}
+    <div class="episode">
+      <h3>🔎 {{ episode.title }}</h3>
+      {% for para in (episode.text or '').split('\n\n') if para.strip() %}<p>{{ para }}</p>{% endfor %}
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+{%- endmacro %}
+
 {% macro digest_view(data, show_heroes=true) -%}
-{% if not data.topics and not data.highlights %}
+{% if not data.topics and not data.highlights and not data.life %}
   <div class="card">{{ empty('Тихий день', 'Ничего заметного в этот день не обсуждали.', 'digest') }}</div>
 {% else %}
   {% if data.highlights %}
@@ -87,6 +103,8 @@
   </section>
   {% endif %}
   {% endfor %}
+
+  {{ life_view(data.life) }}
 
   {% if data.unanswered or data.links %}
   <div class="grid two">

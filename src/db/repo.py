@@ -10,6 +10,8 @@ from datetime import date as date_type
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import asyncpg
+
 from src.config import cfg
 from src.db import pool
 from src.db.models import Author, Chat, Digest, Message
@@ -1667,8 +1669,240 @@ async def set_lore_hidden(lore_id: int, hidden: bool) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+async def get_lore(lore_id: int) -> dict[str, Any] | None:
+    row = await pool.fetchrow("select * from lore where id = $1", lore_id)
+    return dict(row) if row else None
+
+
+async def edit_lore(lore_id: int, *, title: str, body: str) -> dict[str, Any] | None:
+    """Правка владельцем. None — записи нет; ValueError — такое название уже занято."""
+    try:
+        row = await pool.fetchrow(
+            """
+            update lore set title = $2, body = $3, updated_at = now()
+             where id = $1 returning *
+            """,
+            lore_id,
+            title,
+            body,
+        )
+    except asyncpg.UniqueViolationError:
+        raise ValueError("запись с таким названием уже есть") from None
+    return dict(row) if row else None
+
+
+async def merge_lore(
+    into_id: int, from_id: int, *, title: str, body: str
+) -> dict[str, Any] | None:
+    """Влить одну запись лора в другую: текст общий, источники и упоминания — сумма.
+
+    Только внутри одной группы. Вливаемая запись удаляется.
+    """
+    db = await pool.get_pool()
+    async with db.acquire() as conn, conn.transaction():
+        source = await conn.fetchrow("select * from lore where id = $1", from_id)
+        target = await conn.fetchrow("select * from lore where id = $1", into_id)
+        if source is None or target is None or into_id == from_id:
+            return None
+        if source["chat_id"] != target["chat_id"]:
+            return None
+        await conn.execute("delete from lore where id = $1", from_id)
+        try:
+            row = await conn.fetchrow(
+                """
+                update lore set
+                    title = $2, body = $3,
+                    sources = coalesce(sources, '[]'::jsonb) || coalesce($4::jsonb, '[]'::jsonb),
+                    mentions = mentions + $5,
+                    first_day = least(first_day, $6),
+                    last_day = greatest(last_day, $7),
+                    updated_at = now()
+                 where id = $1 returning *
+                """,
+                into_id,
+                title,
+                body,
+                source["sources"] or [],
+                int(source["mentions"] or 0),
+                source["first_day"],
+                source["last_day"],
+            )
+        except asyncpg.UniqueViolationError:
+            raise ValueError("запись с таким названием уже есть") from None
+    return dict(row) if row else None
+
+
 async def delete_lore(lore_id: int) -> bool:
     result = await pool.execute("delete from lore where id = $1", lore_id)
+    return result.endswith("1")
+
+
+# ------------------------------------------------------------- база полезного
+
+# то же выражение, что в индексе knowledge_fts, иначе индекс не используется
+KNOWLEDGE_TSV = "to_tsvector('russian', k.title || ' ' || k.body)"
+
+
+async def list_knowledge(
+    chat_id: int, *, include_archived: bool = False, limit: int = 300
+) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        select * from knowledge
+         where chat_id = $1 and ($2 or not archived)
+         order by last_day desc nulls last, id desc
+         limit $3
+        """,
+        chat_id,
+        include_archived,
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def search_knowledge(
+    chat_id: int,
+    query: str,
+    *,
+    category: str = "",
+    include_archived: bool = False,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Поиск по ключевым словам: полнотекстовый по-русски, плюс точное вхождение.
+
+    Короткие названия сервисов и аббревиатуры («НПД», «Suno») полнотекстовый
+    поиск по-русски может не узнать — их ловит вхождение подстроки.
+    """
+    query = query.strip()
+    rows = await pool.fetch(
+        f"""
+        select k.*,
+               case when $2 = '' then 0
+                    else ts_rank({KNOWLEDGE_TSV}, websearch_to_tsquery('russian', $2)) end as rank
+          from knowledge k
+         where k.chat_id = $1
+           and ($4 or not k.archived)
+           and ($3 = '' or k.category = $3)
+           and (
+                $2 = ''
+                or {KNOWLEDGE_TSV} @@ websearch_to_tsquery('russian', $2)
+                or k.title ilike '%' || $2 || '%'
+                or k.body ilike '%' || $2 || '%'
+                or exists (select 1 from unnest(k.tags) t where t ilike '%' || $2 || '%')
+           )
+         order by rank desc, k.last_day desc nulls last, k.id desc
+         limit $5
+        """,
+        chat_id,
+        query,
+        category,
+        include_archived,
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+async def add_knowledge(
+    chat_id: int,
+    *,
+    title: str,
+    body: str,
+    category: str,
+    tags: list[str],
+    day: date_type,
+    sources: list[dict[str, Any]] | None = None,
+) -> int | None:
+    """Новая запись. Такое название уже есть — запись не дублируется. None — не добавлена."""
+    row = await pool.fetchrow(
+        """
+        insert into knowledge (chat_id, title, body, category, tags, first_day, last_day, sources)
+        values ($1, $2, $3, $4, $5, $6, $6, $7::jsonb)
+        on conflict (chat_id, lower(title)) do update set
+            last_day = greatest(knowledge.last_day, excluded.last_day),
+            mentions = knowledge.mentions
+                     + case when knowledge.last_day < excluded.last_day then 1 else 0 end,
+            updated_at = now()
+        returning id, (xmax = 0) as inserted
+        """,
+        chat_id,
+        title,
+        body,
+        category,
+        tags,
+        day,
+        sources or [],
+    )
+    return int(row["id"]) if row and row["inserted"] else None
+
+
+async def update_knowledge(
+    knowledge_id: int,
+    chat_id: int,
+    *,
+    day: date_type,
+    body: str = "",
+    tags: list[str] | None = None,
+    sources: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Запись дополнилась: новый текст (если дан), новые метки и источники."""
+    result = await pool.execute(
+        """
+        update knowledge set
+            body = case when $4 <> '' then $4 else body end,
+            tags = (select array(select distinct unnest(tags || $5::text[]))),
+            sources = coalesce(sources, '[]'::jsonb) || $6::jsonb,
+            mentions = mentions + case when last_day is null or last_day < $3 then 1 else 0 end,
+            last_day = greatest(coalesce(last_day, $3), $3),
+            updated_at = now()
+         where id = $1 and chat_id = $2 and not archived
+        """,
+        knowledge_id,
+        chat_id,
+        day,
+        body,
+        tags or [],
+        sources or [],
+    )
+    return result.endswith("1")
+
+
+async def get_knowledge(knowledge_id: int) -> dict[str, Any] | None:
+    row = await pool.fetchrow("select * from knowledge where id = $1", knowledge_id)
+    return dict(row) if row else None
+
+
+async def set_knowledge_archived(knowledge_id: int, archived: bool) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        "update knowledge set archived = $2, updated_at = now() where id = $1 returning *",
+        knowledge_id,
+        archived,
+    )
+    return dict(row) if row else None
+
+
+async def edit_knowledge(
+    knowledge_id: int, *, title: str, body: str, category: str, tags: list[str]
+) -> dict[str, Any] | None:
+    try:
+        row = await pool.fetchrow(
+            """
+            update knowledge set title = $2, body = $3, category = $4, tags = $5,
+                   updated_at = now()
+             where id = $1 returning *
+            """,
+            knowledge_id,
+            title,
+            body,
+            category,
+            tags,
+        )
+    except asyncpg.UniqueViolationError:
+        raise ValueError("запись с таким названием уже есть") from None
+    return dict(row) if row else None
+
+
+async def delete_knowledge(knowledge_id: int) -> bool:
+    result = await pool.execute("delete from knowledge where id = $1", knowledge_id)
     return result.endswith("1")
 
 

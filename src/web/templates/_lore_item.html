@@ -1,4 +1,5 @@
 {% from "_ui.html" import icon, badge %}
+{% set peers = peers|default([]) %}
 {% macro act(action, label, cls="ghost") -%}
 <button class="btn sm {{ cls }}" hx-post="/lore/{{ item.id }}" hx-target="#lore-{{ item.id }}" hx-swap="outerHTML"
         {% if action == 'delete' %}hx-confirm="Удалить «{{ item.title }}» из лора насовсем?"{% endif %}
@@ -7,9 +8,11 @@
 <article class="topic {{ 'missed' if item.hidden }}" id="lore-{{ item.id }}">
   <div class="head">
     <h3>{{ item.title }}</h3>
-    {% if item.hidden %}{{ badge('скрыто') }}{% elif item.mentions > 1 %}{{ badge('всплывало ' ~ item.mentions ~ ' ' ~ plural(item.mentions, 'день', 'дня', 'дней'), 'ok') }}{% endif %}
+    {% if item.hidden %}{{ badge('в архиве') }}
+    {% elif fresh_since is defined and item.first_day and item.first_day >= fresh_since %}{{ badge('новое', 'warn') }}
+    {% elif item.mentions > 1 %}{{ badge('всплывало ' ~ item.mentions ~ ' ' ~ plural(item.mentions, 'день', 'дня', 'дней'), 'ok') }}{% endif %}
   </div>
-  {% if item.body %}<p class="takeaway">{{ item.body }}</p>{% endif %}
+  {% if item.body %}{% for para in item.body.split('\n') if para.strip() %}<p class="takeaway">{{ para }}</p>{% endfor %}{% endif %}
   <div class="meta">
     {% if item.first_day %}<span>{{ icon('calendar', 'sm') }}с {{ item.first_day.strftime('%d.%m.%Y') }}{% if item.last_day and item.last_day != item.first_day %}, последний раз {{ item.last_day.strftime('%d.%m') }}{% endif %}</span>{% endif %}
     {% for src in (item.sources or [])[:3] %}
@@ -17,7 +20,31 @@
     {% endfor %}
   </div>
   <div class="fb">
-    {% if item.hidden %}{{ act('show', 'Вернуть') }}{% else %}{{ act('hide', 'Скрыть') }}{% endif %}
+    {% if item.hidden %}{{ act('show', 'Из архива') }}{% else %}{{ act('hide', 'В архив') }}{% endif %}
     {{ act('delete', 'Удалить', 'danger') }}
   </div>
+  <details class="more">
+    <summary>Править</summary>
+    <form hx-post="/lore/{{ item.id }}" hx-target="#lore-{{ item.id }}" hx-swap="outerHTML" class="stack" style="margin-top:8px">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="action" value="edit">
+      <input type="text" name="title" value="{{ item.title }}" maxlength="120" aria-label="Название">
+      <textarea name="body" rows="5" aria-label="Описание">{{ item.body or '' }}</textarea>
+      <div><button class="btn sm" type="submit">{{ icon('check', 'sm') }}Сохранить</button></div>
+    </form>
+  </details>
+  {% if not item.hidden and peers %}
+  <details class="more">
+    <summary>Объединить с другой записью</summary>
+    <form hx-post="/lore/{{ item.id }}" hx-target="#lore-{{ item.id }}" hx-swap="outerHTML" class="btn-row" style="margin-top:8px"
+          hx-confirm="Влить «{{ item.title }}» в выбранную запись? Модель сведёт описания в одну статью, эта запись исчезнет.">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="action" value="merge">
+      <select name="into" aria-label="С какой записью объединить" style="max-width:320px">
+        {% for peer in peers if peer.id != item.id %}<option value="{{ peer.id }}">{{ peer.title }}</option>{% endfor %}
+      </select>
+      <button class="btn sm" type="submit">Объединить</button>
+    </form>
+  </details>
+  {% endif %}
 </article>

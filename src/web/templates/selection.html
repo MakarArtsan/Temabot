@@ -84,14 +84,17 @@
                  value="{{ top_n }}" oninput="document.getElementById('out-top_n').textContent=this.value">
           <span class="field-hint">Даже если порог прошло больше — в дайджест попадут самые сильные.</span>
         </div>
-        <div class="slider">
-          <label class="name" for="top_n_offtopic">«Не по делу, но интересно» — не больше</label>
-          <output id="out-top_n_offtopic">{{ top_n_offtopic }}</output>
-          <input id="top_n_offtopic" type="range" name="top_n_offtopic" min="0" max="10" step="1"
-                 value="{{ top_n_offtopic }}" oninput="document.getElementById('out-top_n_offtopic').textContent=this.value">
-          <span class="field-hint">Личные новости участников и истории, которые живо обсуждали, —
-            отдельным разделом в конце дайджеста. Пустой флуд и шутки, которые никто не подхватил,
-            туда не попадают. 0 — раздел выключен.</span>
+        <div class="toggle-row">
+          <input type="hidden" name="life_section_shown" value="1">
+          <label class="check">
+            <input type="checkbox" name="life_section" value="1" {{ 'checked' if life_section }}>
+            <span><b>Раздел «Жизнь чата»</b></span>
+          </label>
+          <span class="field-hint">Всё, чем чат жил помимо работы, — шутки, личное, сватовство, ссоры —
+            одной колонкой в конце выпуска, в стиле весёлого журналистского расследования, с упоминанием
+            всех участников. Выключите — оффтоп пойдёт списком тем, не больше
+            <input type="number" name="top_n_offtopic" min="0" max="10" value="{{ top_n_offtopic }}"
+                   style="width:64px;min-height:30px;padding:2px 6px" aria-label="Сколько оффтоп-тем"> штук.</span>
         </div>
       </section>
     </div>

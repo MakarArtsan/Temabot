@@ -2,7 +2,7 @@
 {% from "_ui.html" import icon, empty %}
 {% block title %}Лор чата{% endblock %}
 {% block h1 %}Лор чата{% endblock %}
-{% block lead %}<p class="lead">Местные мемы, легендарные персонажи, истории и роли людей. Бот пополняет лор каждый вечер по итогам дня — вы можете скрыть или удалить любую запись. Видите его только вы.</p>{% endblock %}
+{% block lead %}<p class="lead">Вики самых ярких местных мемов, персонажей и историй. Бот пополняет лор каждый вечер по итогам дня и дополняет старые записи, а не плодит новые. Неинтересное — в архив: на сайте его не будет, и похожее бот больше не добавит. Дубли — «Объединить»: модель сведёт их в одну статью. Роли людей видите только вы.</p>{% endblock %}
 {% block content %}
 {% if not chat %}
   <div class="card">{{ empty('Групп пока нет', '', 'groups') }}</div>
@@ -41,6 +41,14 @@
     </section>
     {% endif %}
   {% endfor %}
+  {% if archived %}
+  <section class="card">
+    <details>
+      <summary><h2 style="display:inline">🗄 Архив</h2> <span class="muted small">{{ archived|length }} — не показываются на сайте, похожее бот не добавит</span></summary>
+      {% for item in archived %}{% include "_lore_item.html" %}{% endfor %}
+    </details>
+  </section>
+  {% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

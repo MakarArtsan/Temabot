@@ -19,7 +19,7 @@ from src.config import cfg
 from src.db import pool, repo
 from src.db.models import Chat, Message
 from src.digest import prompts
-from src.digest.render import DigestData, Topic, render, render_html
+from src.digest.render import LIFE_KINDS, DigestData, Topic, render, render_html
 from src.llm.client import Usage, chat_json
 from src.nlp.threads import Thread, segment
 from src.scoring import score as scoring
@@ -90,6 +90,7 @@ class DigestResult:
     failed: int = 0            # тредов, на которых модель не ответила
     digest_id: int | None = None
     lore: list[str] = field(default_factory=list)   # что нового в лоре чата за день
+    knowledge: list[str] = field(default_factory=list)   # что нового в базе полезного
     people: dict[int, str] = field(default_factory=dict)   # tg_user_id → имя за день
 
     @property
@@ -399,6 +400,81 @@ async def make_highlights(
     return highlights[:3], usage
 
 
+LIFE_MAX_TOPICS = 30          # больше в одну колонку не влезет, да и не нужно
+
+
+def life_material(topics: list[Topic]) -> list[Topic]:
+    """Разговоры дня не о работе — материал для колонки «Жизнь чата».
+
+    Без лимита «три лучших»: вечерняя сага, которую нарезка разбила на десяток
+    кусков, должна попасть целиком, а колонку из неё соберёт модель. Пустой флуд
+    (тема без пересказа) не берём; самые людные — если материала слишком много.
+    """
+    picked = [t for t in topics if t.kind in LIFE_KINDS and (t.summary or t.gist)]
+    picked = sorted(picked, key=lambda t: (len(t.participants), t.msg_count), reverse=True)
+    return sorted(picked[:LIFE_MAX_TOPICS], key=lambda t: t.thread_id)
+
+
+async def make_life(
+    topics: list[Topic], chat: Chat, day: date_type, *, lore: str = "", llm: LLMCall = chat_json
+) -> tuple[dict[str, Any], Usage]:
+    """Колонка «Жизнь чата»: всё, чем чат жил помимо работы, — одним забавным текстом."""
+    material = life_material(topics)
+    if not material:
+        return {}, Usage()
+    people = sorted({p for t in material for p in t.participants})
+    listing = "\n".join(
+        f"{t.thread_id}. {t.title}: {t.summary or t.gist}"
+        + (f" (участники: {', '.join(t.participants)})" if t.participants else "")
+        for t in material
+    )
+    user = prompts.LIFE_USER.format(
+        chat=chat.title or chat.tg_id,
+        day=f"{day:%d.%m.%Y}",
+        lore=prompts.LORE_HINT.format(lore=lore) if lore else "",
+        people=", ".join(people) or "—",
+        topics=listing,
+    )
+    try:
+        data, usage = await llm(
+            [
+                {"role": "system", "content": prompts.LIFE_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            purpose="life",
+            chat_id=chat.id,
+        )
+    except Exception:
+        log.warning("Колонка «Жизнь чата» не собралась — выпуск выйдет без неё", exc_info=True)
+        return {}, Usage()
+    return clean_life(data, material), usage
+
+
+def clean_life(data: Any, material: list[Topic]) -> dict[str, Any]:
+    """Проверить колонку: эпизоды с текстом, номера разговоров — только настоящие."""
+    if not isinstance(data, dict) or not str(data.get("headline") or "").strip():
+        return {}
+    known = {t.thread_id for t in material}
+    episodes = []
+    for item in data.get("episodes") or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not title or not text:
+            continue
+        ids = _as_int_list(item.get("thread_ids"), allowed=known)
+        episodes.append({"title": title[:90], "text": text[:2500], "thread_ids": ids})
+    if not episodes:
+        return {}
+    return {
+        "headline": str(data.get("headline")).strip()[:120],
+        "lead": str(data.get("lead") or "").strip()[:500],
+        "episodes": episodes[:8],
+        "cast": _as_str_list(data.get("cast"))[:40],
+    }
+
+
 async def make_article(
     topics: list[Topic],
     highlights: list[str],
@@ -567,6 +643,12 @@ async def build_digest(
     total_usage = total_usage + usage
     article, usage = await make_article(selected, highlights, chat, day, lore=lore, llm=llm)
     total_usage = total_usage + usage
+    life: dict[str, Any] = {}
+    if scoring.life_section(settings):
+        life, usage = await make_life(
+            [t for t, _ in pairs], chat, day, lore=lore, llm=llm
+        )
+        total_usage = total_usage + usage
 
     links: list[str] = []
     for topic in selected:
@@ -588,6 +670,7 @@ async def build_digest(
         busiest_thread=max(selected, key=lambda t: t.msg_count, default=None),
         low_value_count=sum(1 for t in threads if t.low_value),
         article=article,
+        life=life,
     )
 
     return DigestResult(
@@ -659,6 +742,7 @@ async def save_result(
     )
     await _add_heroes(chat, day, result)
     result.lore = await _update_lore(chat, day, result, llm=llm)
+    result.knowledge = await _update_knowledge(chat, day, result, llm=llm)
     return result.digest_id
 
 
@@ -671,6 +755,19 @@ async def lore_context(chat: Chat) -> str:
     except Exception:
         log.warning("Лор чата не прочитался", exc_info=True)
         return ""
+
+
+async def _update_knowledge(
+    chat: Chat, day: date_type, result: DigestResult, *, llm: LLMCall
+) -> list[str]:
+    """Пополнить базу полезного по рабочим темам дня (решение владельца, 15.10)."""
+    from src.digest.knowledge import update_knowledge
+
+    try:
+        return await update_knowledge(chat, day, result.all_topics, llm=llm)
+    except Exception:
+        log.warning("База полезного не обновилась", exc_info=True)
+        return []
 
 
 async def _update_lore(

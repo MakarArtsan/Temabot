@@ -650,8 +650,8 @@ def tab_labels(html: str) -> list[str]:
 def test_member_gets_the_admin_like_tabbar(portal_world: dict[str, Any]):
     page = client_as(MEMBER).get("/g/1")
     assert page.status_code == 200
-    assert tab_labels(page.text) == ["Обзор", "Выпуски", "Рейтинги", "Лор"]
-    assert "--tabs: 4" in page.text
+    assert tab_labels(page.text) == ["Обзор", "Выпуски", "Полезное", "Рейтинги", "Лор"]
+    assert "--tabs: 5" in page.text
     # ни настроек, ни ссылки в админку
     assert 'href="/"' not in page.text and "Админка" not in page.text
     assert "Отбор" not in page.text and "Настройки" not in page.text
@@ -661,7 +661,7 @@ def test_digests_mode_hides_ratings_and_lore(portal_world: dict[str, Any]):
     portal_world["portal"] = "digests"
     client = client_as(MEMBER)
     page = client.get("/g/1")
-    assert tab_labels(page.text) == ["Обзор", "Выпуски"]
+    assert tab_labels(page.text) == ["Обзор", "Выпуски", "Полезное"]
     assert "Из лора" not in page.text
     assert client.get("/g/1/lore").status_code == 404
     assert client.get("/g/1/ratings").status_code == 404

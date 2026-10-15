@@ -363,7 +363,7 @@ table.sticky-first th:first-child, table.sticky-first td:first-child {
 
 label.field { display: block; font-weight: 560; margin: 0 0 6px; }
 .field-hint { display: block; font-size: 13px; color: var(--muted); margin: -2px 0 8px; font-weight: 400; }
-input[type=text], input[type=number], input[type=date], textarea, select {
+input[type=text], input[type=search], input[type=number], input[type=date], textarea, select {
   width: 100%; min-height: 44px; padding: 10px 12px; border-radius: var(--radius-sm);
   border: 1px solid var(--line-strong); background: var(--card); color: var(--ink);
   font: 15px/1.4 var(--font);
@@ -606,3 +606,47 @@ details.more[open] > summary { margin-bottom: 10px; }
 .story .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 13px; }
 .story .meta span { display: inline-flex; align-items: center; gap: 5px; }
 @media (prefers-reduced-motion: reduce) { .story-chevron { transition: none; } }
+
+/* ------------------------------------------------------------- «Жизнь чата» */
+.life { margin: 28px 0 8px; padding-top: 18px; border-top: 3px double var(--line); scroll-margin-top: 72px; }
+.card .life { margin: 0; padding-top: 0; border-top: 0; }
+.life-title {
+  font-family: Georgia, "Times New Roman", serif; font-size: 26px; line-height: 1.2;
+  font-weight: 700; margin: 0 0 8px;
+}
+@media (min-width: 720px) { .life-title { font-size: 30px; } }
+.life .episode { margin-top: 18px; }
+.life .episode h3 { font-size: 17px; margin: 0 0 6px; }
+.life .episode p { font-size: 16px; line-height: 1.65; margin: 0 0 10px; }
+.toggle-row { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.check { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.check input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
+
+/* ------------------------------------------------------------- база полезного */
+.kb-search { display: flex; gap: 8px; }
+.kb-search input[type=search] { flex: 1 1 auto; min-width: 0; }
+.kb-cats { margin-top: 10px; }
+/* на телефоне разделы — одной строкой с прокруткой, а не на пол-экрана */
+@media (max-width: 720px) {
+  .kb-cats { display: flex; flex-wrap: nowrap; overflow-x: auto; width: 100%;
+             scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .kb-cats::-webkit-scrollbar { display: none; }
+  .kb-cats > a { flex: none; white-space: nowrap; }
+}
+.kb-item { border-top: 1px solid var(--line); }
+.kb-item:first-of-type { border-top: 0; }
+.kb-item > summary {
+  list-style: none; cursor: pointer; display: flex; gap: 10px; align-items: flex-start;
+  padding: 14px 0; -webkit-tap-highlight-color: transparent;
+}
+.kb-item > summary::-webkit-details-marker { display: none; }
+.kb-item > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
+.kb-mark { flex: none; font-size: 18px; line-height: 1.35; }
+.kb-title { flex: 1; min-width: 0; font-weight: 600; font-size: 15.5px; line-height: 1.4; color: var(--ink); }
+.kb-item.missed .kb-title { color: var(--ink-2); }
+.kb-body { padding: 0 0 16px 28px; }
+.kb-body > p { margin: 0 0 8px; font-size: 15px; line-height: 1.6; }
+.kb-body .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 13px; }
+.kb-body .meta span { display: inline-flex; align-items: center; gap: 5px; }
+.kb-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+@media (max-width: 520px) { .kb-body { padding-left: 0; } }
