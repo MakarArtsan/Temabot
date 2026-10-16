@@ -10,12 +10,15 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Callable
 from datetime import date as date_type
+from datetime import timedelta
 from typing import Any
 
 from src.db import repo
-from src.db.models import Chat
+from src.db.models import Chat, Digest
 from src.digest import prompts
 from src.digest.render import LIFE_KINDS, Topic
 from src.llm.client import chat_json
@@ -33,6 +36,7 @@ CATEGORIES = {
 }
 CATEGORY_MARKS = {"ai": "🤖", "payments": "💳", "money": "💰", "taxes": "🧾",
                   "legal": "📄", "work": "🛠", "other": "📌"}
+BACKFILL_DAYS = 31        # «собрать за последний месяц»
 PROMPT_LIMIT = 150       # сколько записей базы показывать модели
 MAX_ADDS_PER_DAY = 8
 TITLE_MAX = 120
@@ -156,3 +160,70 @@ def _clean(item: Any, msg_ids: set[int]) -> dict[str, Any] | None:
             ids.append(number)
     return {"title": title, "body": body, "category": category,
             "tags": _tags(item.get("tags")), "msg_ids": ids[:3]}
+
+
+def day_topics(digest: Digest, items: list[dict[str, Any]]) -> list[Topic]:
+    """Темы прошлого дня из архива: все разобранные, включая отсеянные.
+
+    У тем, попавших в выпуск, в архиве есть полный пересказ; у отсеянных — только
+    суть одной строкой из оценки. Для базы полезного этого хватает.
+    """
+    from src.digest.render import DigestData
+
+    shown: dict[int, Topic] = {}
+    try:
+        data = DigestData.from_dict(digest.payload) if digest.payload else None
+    except (TypeError, ValueError, KeyError):
+        data = None
+    if data is not None:
+        shown = {t.thread_id: t for t in data.topics}
+    topics: list[Topic] = []
+    for item in items:
+        thread_id = int(item.get("thread_id") or 0)
+        if thread_id in shown:
+            topic = shown.pop(thread_id)
+            topic.kind = str(item.get("kind") or topic.kind)
+            topics.append(topic)
+            continue
+        features = item.get("features") or {}
+        if isinstance(features, str):
+            try:
+                features = json.loads(features)
+            except ValueError:
+                features = {}
+        takeaway = str((features or {}).get("takeaway") or "").strip()
+        topics.append(Topic(thread_id=thread_id, title=str(item.get("title") or ""),
+                            kind=str(item.get("kind") or "other"), takeaway=takeaway))
+    topics.extend(shown.values())
+    return sorted(topics, key=lambda t: t.thread_id)
+
+
+async def backfill(
+    chat: Chat,
+    today: date_type,
+    *,
+    days: int = BACKFILL_DAYS,
+    llm: Any = chat_json,
+    progress: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Пополнить базу по архиву выпусков за последние дни — от старых к новым.
+
+    Решение владельца (16.10): база появилась 15.10, а полезное за прошлый месяц
+    тоже должно в ней быть. Один вызов модели на день; сбой дня не мешает остальным.
+    """
+    since = today - timedelta(days=days)
+    digests = [d for d in await repo.list_chat_digests(chat.id, limit=days + 5)
+               if since <= d.day <= today]
+    added: list[str] = []
+    for number, digest in enumerate(sorted(digests, key=lambda d: d.day), start=1):
+        if progress:
+            progress(f"{number} из {len(digests)}: {digest.day:%d.%m}")
+        if digest.id is None:
+            continue
+        try:
+            items = await repo.get_digest_items(digest.id)
+            added += await update_knowledge(chat, digest.day, day_topics(digest, items), llm=llm)
+        except Exception:
+            log.warning("База полезного: день %s не разобрался", digest.day, exc_info=True)
+    log.info("База полезного %s: за %s дней добавлено %s", chat.tg_id, len(digests), len(added))
+    return added

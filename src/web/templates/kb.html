@@ -29,6 +29,16 @@
   </div>
 </div>
 
+<div class="card">
+  <div class="card-head"><div><h2>Собрать за последний месяц</h2>
+    <p class="muted small">Модель пройдёт по архиву выпусков за 31 день — по одному вызову на день, от старых к новым — и добавит полезное, которого ещё нет. Уже собранное не задвоится. В группу ничего не уходит.</p></div></div>
+  <div id="kb-backfill">
+    <button class="btn ghost" hx-post="/kb/backfill/{{ chat.id }}" hx-target="#kb-backfill"
+            hx-confirm="Собрать базу «Полезное» по выпускам за последний месяц? Это около одного вызова модели на каждый день архива."
+            hx-vals='{"csrf_token":"{{ csrf }}"}'>{{ icon('refresh', 'sm') }}Собрать за месяц</button>
+  </div>
+</div>
+
 <section class="card">
   {% with action='/kb', hidden_chat=chat.id %}{% include "_kb_search.html" %}{% endwith %}
   <div class="btn-row" style="margin-top:10px">

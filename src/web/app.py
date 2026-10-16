@@ -628,7 +628,29 @@ def launch_digest(chat: Chat, target: date_type, *, resumed: int = 0) -> jobs.Jo
     )
 
 
-LAUNCHERS = {"preview": launch_preview, "digest": launch_digest}
+def launch_kb_backfill(chat: Chat, target: date_type, *, resumed: int = 0) -> jobs.Job:
+    """База «Полезное» по архиву выпусков за последний месяц — в фоне."""
+    holder: dict[str, jobs.Job] = {}
+
+    def progress(text: str) -> None:
+        if "job" in holder:
+            holder["job"].note = text
+
+    async def build() -> int:
+        from src.digest import knowledge as kb
+
+        return len(await kb.backfill(chat, target, progress=progress))
+
+    job = jobs.start(
+        f"kb:{chat.id}", f"базу «Полезное» за месяц до {target:%d.%m}", build,
+        spec={"kind": "kb", "chat_id": chat.id, "day": target.isoformat()},
+        resumed=resumed,
+    )
+    holder["job"] = job
+    return job
+
+
+LAUNCHERS = {"preview": launch_preview, "digest": launch_digest, "kb": launch_kb_backfill}
 
 
 async def resume_jobs() -> None:
@@ -695,7 +717,7 @@ async def job_status(
     request: Request, job_id: str, view: str = "digest", _: dict = Depends(auth.require_owner)
 ) -> HTMLResponse:
     """Состояние фоновой задачи — страница опрашивает его, пока задача идёт."""
-    view = "preview" if view == "preview" else "digest"
+    view = view if view in {"preview", "kb"} else "digest"
     job = jobs.get(job_id)
     if job is None:
         # после перезапуска задача поднимается не сразу — пусть страница подождёт
@@ -1100,6 +1122,20 @@ async def kb_update(
         "item": row, "chat_tg_id": chat.tg_id if chat else None,
         "categories": kb.CATEGORIES, "marks": kb.CATEGORY_MARKS, "owner_view": True,
     })
+
+
+@app.post("/kb/backfill/{chat_id}", response_class=HTMLResponse)
+async def kb_backfill(
+    request: Request, chat_id: int, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Собрать базу по архиву выпусков за последний месяц. В группу ничего не уходит."""
+    auth.check_csrf(request, csrf_token)
+    chat = await repo.get_chat_by_id(chat_id)
+    if chat is None:
+        raise HTTPException(404, "Группа не найдена")
+    job = launch_kb_backfill(chat, local_today())
+    return render(request, "_job.html", {"job": job, "view": "kb", "chat_id": chat.id})
 
 
 @app.post("/kb/settings/{chat_id}")

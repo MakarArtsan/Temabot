@@ -178,6 +178,63 @@ async def test_model_failure_does_not_break_the_digest(kb_repo: dict[str, Any]):
     assert await kb.update_knowledge(chat(), DAY, TOPICS, llm=KBLLM("не JSON-объект")) == []
 
 
+# ============================================================ за прошлый месяц
+
+def old_digest(n: int, day: date, shown: list[Topic]) -> Any:
+    from src.db.models import Digest
+    from src.digest.render import DigestData
+
+    data = DigestData(chat_tg_id=-100111, day=day, topics=shown)
+    return Digest(id=n, chat_id=1, day=day, summary_md="", payload=data.to_dict())
+
+
+async def test_backfill_walks_the_archive_oldest_first(kb_repo: dict[str, Any],
+                                                       monkeypatch: pytest.MonkeyPatch):
+    """Решение владельца 16.10: полезное за прошлый месяц тоже должно быть в базе."""
+    shown = topic(101, "Как платить за Midjourney из России", "resource",
+                  "Через карту Казахстана, комиссия около 10%.", key=[105])
+    digests = [
+        old_digest(3, date(2026, 10, 14), [shown]),
+        old_digest(2, date(2026, 9, 25), []),
+        old_digest(1, date(2026, 9, 1), []),          # старше месяца — не берём
+    ]
+    items = {
+        3: [{"thread_id": 101, "title": "Как платить за Midjourney", "kind": "resource",
+             "features": {"takeaway": "коротко"}},
+            {"thread_id": 102, "title": "НПД и валюта", "kind": "insight",
+             "features": '{"takeaway": "Чек по курсу ЦБ"}'},     # строкой — тоже читаем
+            {"thread_id": 103, "title": "Сватаем Милану", "kind": "fun",
+             "features": {"takeaway": "весело"}}],
+        2: [{"thread_id": 201, "title": "Оплата Suno", "kind": "resource",
+             "features": {"takeaway": "Через App Store"}}],
+    }
+
+    async def list_chat_digests(chat_id: int, limit: int = 60) -> list[Any]:
+        return digests
+
+    async def get_digest_items(digest_id: int, **kw: Any) -> list[dict[str, Any]]:
+        if digest_id == 2:
+            raise RuntimeError("база моргнула")    # сбой дня не мешает остальным
+        return items[digest_id]
+
+    monkeypatch.setattr(repo, "list_chat_digests", list_chat_digests)
+    monkeypatch.setattr(repo, "get_digest_items", get_digest_items)
+    llm = KBLLM({"add": [{"title": "Оплата Midjourney", "body": "Карта Казахстана.",
+                          "msg_ids": [105]}]})
+    notes: list[str] = []
+
+    added = await kb.backfill(chat(), date(2026, 10, 16), llm=llm, progress=notes.append)
+
+    assert notes == ["1 из 2: 25.09", "2 из 2: 14.10"], "от старых к новым, без 01.09"
+    assert len(llm.calls) == 1 and added == ["Оплата Midjourney"]
+    user = llm.calls[0]["user"]
+    assert "Через карту Казахстана" in user, "у темы из выпуска — полный пересказ"
+    assert "НПД и валюта: Чек по курсу ЦБ" in user, "у отсеянной — суть из оценки"
+    assert "Милану" not in user
+    assert kb_repo["added"][0]["day"] == date(2026, 10, 14)
+    assert kb_repo["added"][0]["sources"] == [{"day": "2026-10-14", "msg_id": 105}]
+
+
 # ============================================================ страницы
 
 @pytest.fixture(autouse=True)
@@ -315,6 +372,32 @@ def test_owner_actions(world: dict[str, Any]):
 
     off = client.post("/kb/settings/1", data={"enabled": "0", "csrf_token": csrf})
     assert off.status_code == 303 and world["settings"] == [(1, {"knowledge": {"enabled": False}})]
+
+
+def test_owner_starts_the_month_backfill(world: dict[str, Any],
+                                         monkeypatch: pytest.MonkeyPatch):
+    from types import SimpleNamespace
+
+    started: list[tuple[int, date]] = []
+
+    def launch(chat: Chat, day: date, **kw: Any) -> Any:
+        started.append((chat.id, day))
+        return SimpleNamespace(id="job-kb", done=False, resumed=0, elapsed=3, title="базу",
+                               note="2 из 22: 26.09", error="", result=None)
+
+    monkeypatch.setattr(web_app, "launch_kb_backfill", launch)
+    client = client_as(OWNER)
+
+    assert 'hx-post="/kb/backfill/1"' in client.get("/kb").text
+    response = client.post("/kb/backfill/1", data={"csrf_token": csrf_of(client)})
+
+    assert response.status_code == 200 and "день 2 из 22: 26.09" in response.text
+    assert started and started[0][0] == 1
+    assert client.post("/kb/backfill/9", data={"csrf_token": csrf_of(client)}).status_code == 404
+    assert client.post("/kb/backfill/1", data={"csrf_token": "мимо"}).status_code == 403
+    member = client_as(MEMBER)
+    refused = member.post("/kb/backfill/1", data={"csrf_token": csrf_of(member)})
+    assert refused.status_code == 303 and len(started) == 1
 
 
 def test_owner_actions_need_csrf(world: dict[str, Any]):

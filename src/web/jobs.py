@@ -42,6 +42,7 @@ class Job:
     error: str = ""
     task: asyncio.Task[Any] | None = None
     resumed: int = 0               # сколько раз продолжали после перезапуска
+    note: str = ""                 # где сейчас долгая задача: «3 из 22: 26.09»
 
     @property
     def done(self) -> bool:
