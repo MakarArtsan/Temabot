@@ -115,9 +115,17 @@ async def on_added_to_chat(event: types.ChatMemberUpdated, bot: Bot) -> None:
 
 @router.my_chat_member(ChatMemberUpdatedFilter((MEMBER | ADMINISTRATOR) >> IS_NOT_MEMBER))
 async def on_removed_from_chat(event: types.ChatMemberUpdated, bot: Bot) -> None:
-    await _notify_owner(
-        bot, f"Меня убрали из «{esc_html(event.chat.title or str(event.chat.id))}»."
-    )
+    """Бота убрали из группы — владельцу в личку, с названием группы.
+
+    В личке «убрали» значит, что человек остановил или заблокировал бота: это не
+    группа, у неё нет названия, и владельцу такое шум (раньше приходило
+    «Меня убрали из «6609883746»»). Только в лог.
+    """
+    chat = event.chat
+    if chat.type == "private":
+        log.info("Пользователь %s остановил бота в личке", chat.id)
+        return
+    await _notify_owner(bot, f"Меня убрали из группы «{esc_html(chat.title or str(chat.id))}».")
 
 
 async def _notify_owner(bot: Bot, text: str, markup: Any = None) -> None:

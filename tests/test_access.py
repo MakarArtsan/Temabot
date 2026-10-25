@@ -244,6 +244,27 @@ async def test_private_chat_start_is_not_a_group_addition(
     assert bot.sent == [] and bot.left == []
 
 
+async def test_user_blocking_the_bot_is_not_a_group_removal(owner_id):
+    """Раньше приходило «Меня убрали из «6609883746»» — это человек остановил бота в личке."""
+    bot = FakeBot()
+    event = SimpleNamespace(chat=SimpleNamespace(id=6609883746, title=None, type="private"))
+
+    await admin.on_removed_from_chat(event, bot)
+
+    assert bot.sent == []
+
+
+async def test_removal_from_a_group_names_the_group(owner_id):
+    bot = FakeBot()
+    event = SimpleNamespace(chat=SimpleNamespace(id=-100555, title="Чужая <группа>",
+                                                 type="supergroup"))
+
+    await admin.on_removed_from_chat(event, bot)
+
+    assert bot.sent[0]["chat_id"] == OWNER
+    assert bot.sent[0]["text"] == "Меня убрали из группы «Чужая &lt;группа&gt;»."
+
+
 # ------------------------------------------------------------ решение по кнопке
 
 class FakeCallback:

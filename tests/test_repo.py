@@ -287,9 +287,12 @@ async def test_search_respects_limit():
 async def test_author_activity():
     """Этот запрос падал на приведении типов — проверяем его на живой базе."""
     chat_id = await _chat()
+    # активность считается за последние 30 дней — даты от сегодняшнего дня
+    recent = datetime.now(UTC) - timedelta(days=1)
     for n in range(5):
-        await repo.upsert_message(_msg(chat_id, n + 1, text=f"сообщение {n}"))
-    await repo.upsert_message(_msg(chat_id, 99, tg_user_id=2002, author_name="Петя"))
+        await repo.upsert_message(_msg(chat_id, n + 1, text=f"сообщение {n}", date=recent))
+    await repo.upsert_message(_msg(chat_id, 99, tg_user_id=2002, author_name="Петя",
+                                   date=recent))
 
     found = await repo.get_author_activity("Вася")
     assert found is not None
@@ -301,7 +304,7 @@ async def test_author_activity():
 
 async def test_author_activity_by_user_id():
     chat_id = await _chat()
-    await repo.upsert_message(_msg(chat_id, 1))
+    await repo.upsert_message(_msg(chat_id, 1, date=datetime.now(UTC) - timedelta(days=1)))
     found = await repo.get_author_activity("1001")
     assert found is not None and found["tg_user_id"] == 1001
 
