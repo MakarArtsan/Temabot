@@ -83,8 +83,9 @@ async def test_collector_marks_bots(monkeypatch: pytest.MonkeyPatch):
 
     saved: list[tuple[Any, ...]] = []
 
-    async def upsert_author(user_id: int, name: str | None, *, is_bot: bool = False) -> None:
-        saved.append((user_id, name, is_bot))
+    async def upsert_author(user_id: int, name: str | None, *, is_bot: bool = False,
+                            username: str | None = None) -> None:
+        saved.append((user_id, name, is_bot, username))
 
     monkeypatch.setattr("src.collector.handlers.repo.upsert_author", upsert_author)
 
@@ -94,7 +95,7 @@ async def test_collector_marks_bots(monkeypatch: pytest.MonkeyPatch):
 
     message = SimpleNamespace(sender_id=777, get_sender=sender)
     await AuthorCache().resolve(message)
-    assert saved == [(777, "Помощник", True)]
+    assert saved == [(777, "Помощник", True, "helper_bot")], "и @ник — для упоминаний"
 
 
 # ================================================================ темы форума

@@ -5,7 +5,8 @@
 обычный бот видит не всех. Коллектор читает группу от имени аккаунта-участника,
 поэтому держит собственный список: это запасной источник для проверки доступа.
 
-Храним только id участников — ни имён, ни чего-то ещё.
+Храним только id участников — ни имён, ни чего-то ещё. Исключение — @ник тех,
+кто уже писал в группе (он есть в authors): дайджесту нужно понимать упоминания.
 """
 from __future__ import annotations
 
@@ -64,7 +65,16 @@ async def sync_members(client: Any, chat: Chat) -> int | None:
         # в группе как минимум сам аккаунт коллектора — пустой ответ подозрителен
         log.info("Telegram не отдал участников %s, список не трогаю", chat.tg_id)
         return None
-    total = int(getattr(users, "total", 0) or 0)
+    try:
+        # @ники — только тем, кто уже писал: модели нужно знать, что «@elheor» — это Саша
+        await repo.save_usernames({
+            int(u.id): getattr(u, "username", None)
+            for u in users
+            if not getattr(u, "bot", False) and not getattr(u, "deleted", False)
+        })
+    except Exception:
+        log.warning("Ники участников %s не сохранились", chat.tg_id, exc_info=True)
+        total = int(getattr(users, "total", 0) or 0)
     complete = len(users) >= total
     await repo.save_chat_members(chat.id, ids, complete=complete)
     log.info(

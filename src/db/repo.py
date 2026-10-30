@@ -26,6 +26,25 @@ def day_bounds(day: date_type, tz: str | None = None) -> tuple[datetime, datetim
     return start, start + timedelta(days=1)
 
 
+ISSUE_CUT_FROM = time(12, 0)   # вечерний дайджест — окно сдвигается на время выпуска
+
+
+def issue_bounds(
+    day: date_type, cut: time | None, tz: str | None = None
+) -> tuple[datetime, datetime]:
+    """Окно выпуска за день: от времени дайджеста накануне до времени дайджеста.
+
+    Выпуск собирается в 23:30, а чат живёт и после — раньше последние полчаса
+    дня не попадали ни в один выпуск (так пропала победа Саши 29.10). Теперь хвост
+    дня уходит в следующий выпуск. Утреннее или полуночное время — обычные сутки.
+    """
+    if cut is None or cut < ISSUE_CUT_FROM:
+        return day_bounds(day, tz)
+    zone = ZoneInfo(tz or cfg.TZ)
+    end = datetime.combine(day, cut, tzinfo=zone)
+    return end - timedelta(days=1), end
+
+
 # ------------------------------------------------------------------------- чаты
 
 async def get_chat_by_tg_id(chat_tg_id: int) -> Chat | None:
@@ -343,23 +362,57 @@ async def list_author_weights() -> dict[str, Any]:
     }
 
 
-async def upsert_author(tg_user_id: int, name: str | None, *, is_bot: bool = False) -> Author:
+async def upsert_author(
+    tg_user_id: int, name: str | None, *, is_bot: bool = False, username: str | None = None
+) -> Author:
     row = await pool.fetchrow(
         """
-        insert into authors (tg_user_id, name, is_bot)
-        values ($1, $2, $3)
+        insert into authors (tg_user_id, name, is_bot, username)
+        values ($1, $2, $3, $4)
         on conflict (tg_user_id) do update
             set name = coalesce(excluded.name, authors.name),
                 is_bot = authors.is_bot or excluded.is_bot,
+                username = coalesce(excluded.username, authors.username),
                 updated_at = now()
         returning *
         """,
         tg_user_id,
         name,
         is_bot,
+        (username or "").lstrip("@") or None,
     )
     assert row is not None
     return Author.from_row(row)
+
+
+async def save_usernames(usernames: dict[int, str | None]) -> int:
+    """@username участников из сверки — только тем, кто уже писал в группе.
+
+    Новых людей в authors не заводим: про молчащих участников храним только id
+    (src/collector/members.py). Пустой username (человек его убрал) — стираем.
+    """
+    if not usernames:
+        return 0
+    ids = list(usernames)
+    names = [(usernames[i] or "").lstrip("@") or None for i in ids]
+    result = await pool.execute(
+        """
+        update authors a set username = u.username
+          from unnest($1::bigint[], $2::text[]) as u(tg_user_id, username)
+         where a.tg_user_id = u.tg_user_id and a.username is distinct from u.username
+        """,
+        ids,
+        names,
+    )
+    return int(result.split()[-1]) if result else 0
+
+
+async def author_handles() -> dict[str, str]:
+    """`username` в нижнем регистре → имя: чтобы в тексте для модели @ник стал человеком."""
+    rows = await pool.fetch(
+        "select username, name from authors where username is not null and name is not null"
+    )
+    return {str(r["username"]).lower(): str(r["name"]) for r in rows}
 
 
 # --------------------------------------------------------------------- сообщения
@@ -564,13 +617,15 @@ async def get_messages_by_day(
     tz: str | None = None,
     include_deleted: bool = True,
     exclude_bots: bool = False,
+    cut: time | None = None,
 ) -> list[Message]:
     """Сообщения за локальные сутки. Удалённые по умолчанию включены (TZ §4.1).
 
     exclude_bots — без сообщений ботов: нашего (по id из токена) и тех, кого
     коллектор отметил ботом. Для дайджеста, рейтингов и поиска.
+    cut — время дайджеста: окно выпуска вместо календарных суток (`issue_bounds`).
     """
-    start, end = day_bounds(day, tz)
+    start, end = issue_bounds(day, cut, tz)
     rows = await pool.fetch(
         """
         select m.* from messages m

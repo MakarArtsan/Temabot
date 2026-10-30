@@ -178,5 +178,8 @@ class AuthorCache:
 
         self.put(user_id, name)
         if persist:
-            await repo.upsert_author(user_id, name, is_bot=bool(getattr(sender, "bot", False)))
+            await repo.upsert_author(
+                user_id, name, is_bot=bool(getattr(sender, "bot", False)),
+                username=getattr(sender, "username", None),
+            )
         return name

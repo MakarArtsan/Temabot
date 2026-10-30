@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date as date_type
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.config import cfg
 from src.db import pool, repo
@@ -571,6 +573,179 @@ def collect_unanswered(threads: list[Thread], topics: list[Topic]) -> list[tuple
     return result
 
 
+HANDLE_RE = re.compile(r"(?<![\w@])@([A-Za-z][A-Za-z0-9_]{3,31})\b")
+
+
+def name_handles(messages: list[Message], handles: dict[str, str]) -> list[Message]:
+    """«@elheor» → «@elheor (Sasha Fevralskaya)» в тексте для модели.
+
+    Без этого модель не знала, кого поздравляют, и приписала победу Саши
+    другому человеку (29.10). Исходные сообщения не меняются — только копии.
+    """
+    if not handles:
+        return messages
+
+    def named(match: re.Match[str]) -> str:
+        name = handles.get(match.group(1).lower())
+        return f"{match.group(0)} ({name})" if name else match.group(0)
+
+    result: list[Message] = []
+    for message in messages:
+        text = message.text or ""
+        if "@" in text:
+            new_text = HANDLE_RE.sub(named, text)
+            if new_text != text:
+                message = dataclasses.replace(message, text=new_text)
+        result.append(message)
+    return result
+
+
+async def _handles() -> dict[str, str]:
+    try:
+        return await repo.author_handles()
+    except Exception:
+        log.warning("Ники участников не прочитались", exc_info=True)
+        return {}
+
+
+DEFAULT_ISSUE_CUT = time(23, 30)   # как в расписании (scheduler.DEFAULT_DIGEST_TIME)
+
+
+STORY_MIN_TOPICS = 4        # меньше тем — склеивать нечего
+STORY_MAX_GROUPS = 8
+STORY_MAX_LINES = 200        # короткие реплики добавляем, пока список влезает
+STORY_MAX_MESSAGES = 300     # склейка больше — уже не одна история, а полдня чата
+
+
+def _story_line(number: int, part: Thread, topic: Topic | None) -> str:
+    start = part.started_at.astimezone(ZoneInfo(cfg.TZ))
+    end = part.last_at.astimezone(ZoneInfo(cfg.TZ))
+    if topic is None:
+        # короткая реплика без разбора: показываем как есть
+        said = " / ".join(
+            f"{m.author_name or 'аноним'}: {(m.content or '').replace(chr(10), ' ')[:100]}"
+            for m in part.messages
+        )
+        return f"{number}. [{start:%H:%M}] реплика — {said}"
+    gist = (topic.summary or topic.gist or "").replace("\n", " ")[:220]
+    people = ", ".join(topic.participants[:6])
+    return (f"{number}. [{start:%H:%M}–{end:%H:%M}] {topic.title} — {gist}"
+            + (f" (участники: {people})" if people else ""))
+
+
+def story_groups(data: Any, size: int) -> list[list[int]]:
+    """Проверить ответ: номера настоящие, каждый в одной группе, в группе от двух."""
+    raw = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    taken: set[int] = set()
+    groups: list[list[int]] = []
+    for group in raw:
+        if not isinstance(group, list):
+            continue
+        numbers: list[int] = []
+        for value in group:
+            try:
+                number = int(str(value))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= number <= size and number not in taken and number not in numbers:
+                numbers.append(number)
+        if len(numbers) >= 2:
+            taken.update(numbers)
+            groups.append(sorted(numbers))
+    return groups[:STORY_MAX_GROUPS]
+
+
+async def merge_stories(
+    stories: list[tuple[Thread, Topic, ThreadSignals]],
+    chat: Chat,
+    signals_of: Callable[[Thread], ThreadSignals],
+    *,
+    scraps: list[Thread] | None = None,
+    llm: LLMCall = chat_json,
+    lore: str = "",
+) -> tuple[list[tuple[Thread, Topic, ThreadSignals]], Usage]:
+    """Склеить куски одной истории в одну тему (решение владельца, 30.10).
+
+    Программа режет переписку по ответам и авторам, и волна реакций на одно
+    событие — победа Саши в конкурсе 29.10 — превращалась в дюжину тем по два
+    сообщения: «Лиза спрашивает, выиграла ли Саша», «Татьяна поздравляет…». Каждая
+    без контекста, каждая с низкой оценкой, главное событие дня в выпуск не
+    попало. Модель видит список тем дня и находит куски одной истории; склейка
+    разбирается заново как один разговор, с общими сигналами (все участники).
+
+    `scraps` — короткие реплики, которые по отдельности не разбираются
+    («Поздравляю!»): их показываем, пока список влезает, и они могут
+    присоединиться к истории, но сами по себе историю не образуют.
+    Сбой — темы остаются как были.
+    """
+    usage = Usage()
+    if len(stories) < STORY_MIN_TOPICS:
+        return stories, usage
+    items: list[tuple[Thread, Topic | None]] = [(part, topic) for part, topic, _ in stories]
+    room = STORY_MAX_LINES - len(items)
+    if scraps and room >= len(scraps):
+        items += [(scrap, None) for scrap in scraps]
+    ordered = sorted(items, key=lambda item: (item[0].started_at, item[0].root_msg_id))
+    try:
+        data, usage = await llm(
+            [
+                {"role": "system", "content": prompts.STORIES_SYSTEM},
+                {"role": "user", "content": prompts.STORIES_USER.format(
+                    topics="\n".join(_story_line(i, part, topic)
+                                     for i, (part, topic) in enumerate(ordered, start=1)),
+                )},
+            ],
+            purpose="stories",
+            chat_id=chat.id,
+        )
+    except Exception:
+        log.warning("Склейка историй не удалась — темы как есть", exc_info=True)
+        return stories, usage
+
+    # склейка встаёт на место своего первого куска, остальные куски уходят
+    replaced: dict[int, tuple[Thread, Topic, ThreadSignals] | None] = {}
+    for group in story_groups(data, len(ordered)):
+        members = [ordered[i - 1] for i in group]
+        pieces = [id(topic) for _, topic in members if topic is not None]
+        if not pieces:
+            continue    # одни реплики без разобранной темы — не история
+        messages = {m.tg_msg_id: m for part, _ in members for m in part.messages}
+        if len(messages) > STORY_MAX_MESSAGES:
+            continue
+        joined = sorted(messages.values(), key=lambda m: (m.date, m.tg_msg_id))
+        first = members[0][0]
+        thread = Thread(chat_id=first.chat_id, root_msg_id=joined[0].tg_msg_id,
+                        messages=joined, topic_id=first.topic_id)
+        try:
+            topic, extra = await map_thread(thread, chat, llm=llm, lore=lore)
+        except Exception:
+            log.warning("Склейка %s не разобралась — оставляю куски", group, exc_info=True)
+            continue
+        usage = usage + extra
+        if topic is None:
+            continue
+        log.info("Склеил %s кусков в «%s»", len(group), topic.title)
+        replaced[pieces[0]] = (thread, topic, signals_of(thread))
+        replaced.update({piece: None for piece in pieces[1:]})
+    if not replaced:
+        return stories, usage
+    result: list[tuple[Thread, Topic, ThreadSignals]] = []
+    for story in stories:
+        key = id(story[1])
+        if key not in replaced:
+            result.append(story)
+        elif (merged_story := replaced[key]) is not None:
+            result.append(merged_story)
+    return result, usage
+
+
+def issue_cut(chat: Chat) -> time:
+    """До какого времени дня идёт выпуск: время дайджеста группы, по умолчанию 23:30."""
+    return chat.digest_time or DEFAULT_ISSUE_CUT
+
+
 async def build_digest(
     chat: Chat,
     day: date_type,
@@ -581,7 +756,10 @@ async def build_digest(
 ) -> DigestResult:
     """Собрать дайджест за день. В БД ничего не пишет — этим занимается run()."""
     # сообщения ботов (наш «Готово!», чужие боты) — не обсуждение людей
-    messages = await repo.get_messages_by_day(chat.id, day, exclude_bots=True)
+    messages = await repo.get_messages_by_day(
+        chat.id, day, exclude_bots=True, cut=issue_cut(chat)
+    )
+    messages = name_handles(messages, await _handles())
     meaningful, noise = split_noise(messages)
     threads = segment(meaningful)
 
@@ -605,7 +783,14 @@ async def build_digest(
     pairs: list[tuple[Topic, scoring.Scored]] = []
     mapped = failed = 0
 
+    def signals_of(part: Thread) -> ThreadSignals:
+        return collect_signals(
+            part, owner_id=cfg.OWNER_ID,
+            author_weights=authors["weights"], muted_authors=authors["muted"],
+        )
+
     mapped_threads: list[Thread] = []
+    stories: list[tuple[Thread, Topic, ThreadSignals]] = []
     for thread, signals in zip(live, peers, strict=True):
         try:
             conversations, usage = await map_conversations(thread, chat, llm=llm, lore=lore)
@@ -620,17 +805,24 @@ async def build_digest(
             if topic is None:
                 continue
             # у отделённого разговора свои сигналы: свои люди, ответы, реакции
-            part_signals = signals if part is thread else collect_signals(
-                part, owner_id=cfg.OWNER_ID,
-                author_weights=authors["weights"], muted_authors=authors["muted"],
-            )
-            result, usage = await score_topic(
-                topic, part, chat,
-                signals=part_signals, peers=peers, history=history,
-                recent_topics=recent_items, examples=examples, llm=llm,
-            )
-            total_usage = total_usage + usage
-            pairs.append((topic, result))
+            stories.append((part, topic, signals if part is thread else signals_of(part)))
+
+    # одна история, порезанная на куски (поздравления с победой от двадцати
+    # человек), — одной темой: иначе каждый кусок «без контекста» и тонет
+    stories, usage = await merge_stories(
+        stories, chat, signals_of, llm=llm, lore=lore,
+        scraps=[t for t in threads if t.low_value],
+    )
+    total_usage = total_usage + usage
+
+    for part, topic, part_signals in stories:
+        result, usage = await score_topic(
+            topic, part, chat,
+            signals=part_signals, peers=peers, history=history,
+            recent_topics=recent_items, examples=examples, llm=llm,
+        )
+        total_usage = total_usage + usage
+        pairs.append((topic, result))
 
     settings = dict(chat.settings or {})
     if top_n is not None:

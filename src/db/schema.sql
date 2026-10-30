@@ -193,6 +193,8 @@ alter table author_stats_daily add column if not exists short_msgs int default 0
 -- Боты в группе (наш и чужие): их сообщения не идут ни в дайджест, ни в рейтинги,
 -- ни в поиск. Отметку ставит коллектор по профилю отправителя.
 alter table authors add column if not exists is_bot boolean default false;
+-- @username без «@»: чтобы модель понимала, что «@elheor» — это Саша (дайджест 29.10)
+alter table authors add column if not exists username text;
 
 create table if not exists state (key text primary key, value jsonb);  -- last_msg_id и пр.
 
