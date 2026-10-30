@@ -613,7 +613,7 @@ DEFAULT_ISSUE_CUT = time(23, 30)   # как в расписании (scheduler.D
 
 
 STORY_MIN_TOPICS = 4        # меньше тем — склеивать нечего
-STORY_MAX_GROUPS = 8
+STORY_MAX_GROUPS = 12        # самые большие: длинный список модель дробит на пары
 STORY_MAX_LINES = 200        # короткие реплики добавляем, пока список влезает
 STORY_MAX_MESSAGES = 300     # склейка больше — уже не одна история, а полдня чата
 
@@ -632,6 +632,25 @@ def _story_line(number: int, part: Thread, topic: Topic | None) -> str:
     people = ", ".join(topic.participants[:6])
     return (f"{number}. [{start:%H:%M}–{end:%H:%M}] {topic.title} — {gist}"
             + (f" (участники: {people})" if people else ""))
+
+
+def _fit(
+    members: Any,
+) -> list[tuple[Thread, Topic | None]]:
+    """Не больше STORY_MAX_MESSAGES сообщений: сначала короткие куски.
+
+    Реакции на событие короткие, а в большую группу модель иногда затягивает
+    длинное соседнее обсуждение — оно и остаётся отдельной темой.
+    """
+    picked: list[tuple[Thread, Topic | None]] = []
+    total = 0
+    for item in sorted(members, key=lambda item: len(item[0].messages)):
+        size = len(item[0].messages)
+        if total + size > STORY_MAX_MESSAGES:
+            continue
+        picked.append(item)
+        total += size
+    return sorted(picked, key=lambda item: (item[0].started_at, item[0].root_msg_id))
 
 
 def story_groups(data: Any, size: int) -> list[list[int]]:
@@ -655,6 +674,9 @@ def story_groups(data: Any, size: int) -> list[list[int]]:
         if len(numbers) >= 2:
             taken.update(numbers)
             groups.append(sorted(numbers))
+    # 29.10: на 193 темах модель вернула 60 групп, главная история — 58-я; брали
+    # первые восемь по порядку (утренние пары), и победа Саши так и не склеилась
+    groups.sort(key=lambda group: -len(group))
     return groups[:STORY_MAX_GROUPS]
 
 
@@ -708,13 +730,11 @@ async def merge_stories(
     # склейка встаёт на место своего первого куска, остальные куски уходят
     replaced: dict[int, tuple[Thread, Topic, ThreadSignals] | None] = {}
     for group in story_groups(data, len(ordered)):
-        members = [ordered[i - 1] for i in group]
+        members = _fit(ordered[i - 1] for i in group)
         pieces = [id(topic) for _, topic in members if topic is not None]
-        if not pieces:
+        if not pieces or len(members) < 2:
             continue    # одни реплики без разобранной темы — не история
         messages = {m.tg_msg_id: m for part, _ in members for m in part.messages}
-        if len(messages) > STORY_MAX_MESSAGES:
-            continue
         joined = sorted(messages.values(), key=lambda m: (m.date, m.tg_msg_id))
         first = members[0][0]
         thread = Thread(chat_id=first.chat_id, root_msg_id=joined[0].tg_msg_id,

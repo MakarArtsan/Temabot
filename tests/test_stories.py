@@ -218,11 +218,28 @@ async def test_too_few_topics_cost_nothing():
     assert stories == few and llm.calls == [] and usage.tokens_in == 0
 
 
-async def test_huge_merge_is_refused(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(dp, "STORY_MAX_MESSAGES", 5)
+async def test_huge_merge_keeps_the_short_pieces(monkeypatch: pytest.MonkeyPatch):
+    """Не больше лимита сообщений: короткие куски склеиваются, длинный остаётся сам."""
+    monkeypatch.setattr(dp, "STORY_MAX_MESSAGES", 6)
+    long_piece = fragments()[4]                # Recraft, 3 сообщения
+    stories, _ = await dp.merge_stories(fragments(), chat(), signals_of,
+                                        llm=win_llm(groups=[[1, 2, 3, 4, 5]]))
+    merged = stories[0][0]
+    assert len(merged.messages) <= 6
+    assert long_piece[1].title in [t.title for _, t, _ in stories], "длинный — отдельно"
+
+    monkeypatch.setattr(dp, "STORY_MAX_MESSAGES", 1)
     stories, _ = await dp.merge_stories(fragments(), chat(), signals_of,
                                         llm=win_llm(groups=[[2, 3, 4, 5]]))
-    assert len(stories) == 5, "полдня чата одной «историей» не склеиваем"
+    assert len(stories) == 5, "ни один кусок не влез — ничего не склеиваем"
+
+
+def test_biggest_groups_go_first(monkeypatch: pytest.MonkeyPatch):
+    """29.10: главная история была 58-й из 60 групп, а брали первые восемь."""
+    monkeypatch.setattr(dp, "STORY_MAX_GROUPS", 2)
+    pairs = [[n, n + 1] for n in range(1, 40, 2)]
+    groups = dp.story_groups({"groups": [*pairs, list(range(41, 61))]}, 70)
+    assert groups[0] == list(range(41, 61)) and len(groups) == 2
 
 
 def scrap(n: int, user: int, text: str, minutes: int) -> Thread:
