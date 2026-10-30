@@ -288,6 +288,20 @@ create index if not exists knowledge_fts on knowledge using gin (
   to_tsvector('russian', title || ' ' || body)
 );
 
+-- досье участников (решение владельца, 30.10): вехи и характеристика, по умолчанию
+-- видит только владелец; участникам — когда он откроет (settings.dossier.public)
+create table if not exists dossiers (
+  chat_id     bigint references chats(id) on delete cascade,
+  tg_user_id  bigint,
+  summary     text not null default '',   -- характеристика: по-доброму, с юмором
+  milestones  jsonb not null default '[]',-- [{"day": ..., "text": ..., "msg_id": ...}]
+  first_day   date,
+  last_day    date,
+  hidden      boolean default false,      -- владелец убрал досье с сайта и из промпта
+  updated_at  timestamptz default now(),
+  primary key (chat_id, tg_user_id)
+);
+
 -- ------------------------------------------------- приватность (TZ §9)
 
 -- Supabase отдаёт таблицы схемы public наружу через PostgREST под ролями
@@ -304,7 +318,8 @@ begin
   foreach t in array array[
     'chats', 'authors', 'copier_blocklist', 'settings', 'llm_usage', 'messages',
     'chunks', 'digests', 'digest_items', 'feedback', 'qa_log', 'thread_contrib',
-    'author_stats_daily', 'state', 'chat_members', 'lore', 'llm_cache', 'knowledge'
+    'author_stats_daily', 'state', 'chat_members', 'lore', 'llm_cache', 'knowledge',
+    'dossiers'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;

@@ -1,0 +1,40 @@
+{% from "_ui.html" import icon, badge %}
+{% macro act(action, label, cls="ghost", confirm="") -%}
+<button class="btn sm {{ cls }}" hx-post="/dossiers/{{ chat_id }}/{{ item.tg_user_id }}" hx-target="#dossier-{{ item.tg_user_id }}" hx-swap="outerHTML"
+        {% if confirm %}hx-confirm="{{ confirm }}"{% endif %}
+        hx-vals='{"action":"{{ action }}","csrf_token":"{{ csrf }}"}'>{{ label }}</button>
+{%- endmacro %}
+<article class="topic dossier {{ 'missed' if item.hidden }}" id="dossier-{{ item.tg_user_id }}">
+  <div class="head">
+    <h3>{{ item.name or ('id ' ~ item.tg_user_id) }}{% if item.username %} <span class="muted small">@{{ item.username }}</span>{% endif %}</h3>
+    {% if item.hidden %}{{ badge('скрыто') }}{% elif item.opted_out %}{{ badge('скрылся по /optout', 'warn') }}{% endif %}
+  </div>
+  {% if item.summary %}<p class="takeaway">{{ item.summary }}</p>
+  {% else %}<p class="muted small">Характеристики пока нет — появится, когда наберутся вехи.</p>{% endif %}
+  {% set milestones = item.milestones or [] %}
+  {% if milestones %}
+  <ul class="milestones">
+    {% for m in milestones|reverse %}{% set index = milestones|length - loop.index %}
+    <li><span class="when">{{ m.day[8:10] ~ '.' ~ m.day[5:7] if m.day else '' }}</span>
+      <span class="what">{{ m.text }}</span>
+      {% if chat_tg_id and m.msg_id %}<a href="{{ deeplink(chat_tg_id, m.msg_id) }}" target="_blank" rel="noopener noreferrer" aria-label="Откуда">{{ icon('external', 'sm') }}</a>{% endif %}
+      <button class="link-btn" hx-post="/dossiers/{{ chat_id }}/{{ item.tg_user_id }}" hx-target="#dossier-{{ item.tg_user_id }}" hx-swap="outerHTML"
+              hx-vals='{"action":"milestone","index":"{{ index }}","csrf_token":"{{ csrf }}"}' aria-label="Убрать веху" title="Убрать веху">✕</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <div class="fb">
+    {% if item.hidden %}{{ act('show', 'Вернуть') }}{% else %}{{ act('hide', 'Скрыть') }}{% endif %}
+    {{ act('delete', 'Удалить', 'danger', 'Удалить досье «' ~ (item.name or item.tg_user_id) ~ '» насовсем? Бот начнёт собирать его заново.') }}
+  </div>
+  <details class="more">
+    <summary>Править характеристику</summary>
+    <form hx-post="/dossiers/{{ chat_id }}/{{ item.tg_user_id }}" hx-target="#dossier-{{ item.tg_user_id }}" hx-swap="outerHTML" class="stack" style="margin-top:8px">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="action" value="summary">
+      <textarea name="summary" rows="4" maxlength="700" aria-label="Характеристика">{{ item.summary }}</textarea>
+      <div><button class="btn sm" type="submit">{{ icon('check', 'sm') }}Сохранить</button></div>
+    </form>
+  </details>
+</article>

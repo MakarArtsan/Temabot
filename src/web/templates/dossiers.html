@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Досье{% endblock %}
+{% block h1 %}Досье участников{% endblock %}
+{% block lead %}<p class="lead">Важные вехи каждого, кто мелькает в чате, — победы, проекты, заказы, радости — и общая характеристика: по-доброму и с лёгким юмором. Бот пополняет досье каждый вечер по темам дня. Здоровье, деньги, ссоры и прочее, что человеку было бы неприятно увидеть, не записываются. Тем, кто скрылся по /optout, досье не заводится.</p>{% endblock %}
+{% block content %}
+{% if not chat %}
+  <div class="card">{{ empty('Групп пока нет', '', 'groups') }}</div>
+{% else %}
+<div class="card">
+  <div class="rows">
+    {% if chats|length > 1 %}
+    <form method="get" action="/dossiers" class="row">
+      <label class="text title" for="dossier-chat">Группа</label>
+      <div class="control"><select id="dossier-chat" name="chat" onchange="this.form.submit()">
+        {% for c in chats %}<option value="{{ c.id }}" {{ 'selected' if c.id == chat.id }}>{{ chat_name(c) }}</option>{% endfor %}
+      </select></div>
+    </form>
+    {% endif %}
+    {% for field, on, title, hint in [
+      ('enabled', enabled, 'Вести досье', 'Один вызов модели в день, после дайджеста.'),
+      ('public', public, 'Показывать участникам', 'Вкладка «Досье» на странице участников (режим «выпуски, рейтинги и лор»). Скрытые досье и скрывшиеся по /optout туда не попадают. Пока выключено — досье видите только вы.'),
+    ] %}
+    <form method="post" action="/dossiers/settings/{{ chat.id }}" class="row">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="field" value="{{ field }}">
+      <input type="hidden" name="value" value="{{ 0 if on else 1 }}">
+      <div class="text"><div class="title">{{ title }}</div><div class="hint">{{ hint }}</div></div>
+      <div class="control"><button class="switch" role="switch" type="submit" aria-label="{{ title }}" aria-checked="{{ 'true' if on else 'false' }}"></button></div>
+    </form>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div><h2>Собрать по архиву</h2>
+    <p class="muted small">Модель пройдёт по всем выпускам архива — по одному вызову на день, от старых к новым — и запишет вехи и характеристики за всё время ведения дайджеста. Уже записанное не задвоится. В группу ничего не уходит.</p></div></div>
+  <div id="dossier-backfill">
+    <button class="btn ghost" hx-post="/dossiers/backfill/{{ chat.id }}" hx-target="#dossier-backfill"
+            hx-confirm="Собрать досье по всему архиву выпусков? Это один вызов модели на каждый день архива."
+            hx-vals='{"csrf_token":"{{ csrf }}"}'>{{ icon('refresh', 'sm') }}Собрать по архиву</button>
+  </div>
+</div>
+
+{% set chat_id = chat.id %}{% set chat_tg_id = chat.tg_id %}
+{% if rows %}
+<section class="card">
+  <div class="card-head"><h2>Участники</h2><span class="muted small">{{ rows|length }}</span></div>
+  {% for item in rows %}{% include "_dossier_item.html" %}{% endfor %}
+</section>
+{% else %}
+  <div class="card">{{ empty('Досье пока нет', 'Они появятся после вечернего дайджеста — или нажмите «Собрать по архиву».', 'user') }}</div>
+{% endif %}
+{% if hidden_rows %}
+<section class="card">
+  <details>
+    <summary><h2 style="display:inline">🙈 Скрытые</h2> <span class="muted small">{{ hidden_rows|length }} — не видны участникам, бот их не пополняет</span></summary>
+    {% for item in hidden_rows %}{% include "_dossier_item.html" %}{% endfor %}
+  </details>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

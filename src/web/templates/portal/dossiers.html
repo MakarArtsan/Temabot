@@ -1,0 +1,30 @@
+{% extends "portal/base.html" %}
+{% from "_ui.html" import icon, empty %}
+{% block title %}Досье · {{ chat_name(chat) }}{% endblock %}
+{% block content %}
+{% include "portal/_group_head.html" %}
+<div class="page-head"><div><h1>Досье</h1>
+  <p class="lead">Кто есть кто в чате: главные вехи и характеристика каждого — по-доброму и с огоньком. Пополняется каждый вечер.</p></div></div>
+{% if rows %}
+<section class="card">
+  {% for item in rows %}
+  <article class="topic dossier">
+    <div class="head"><h3>{{ item.name }}</h3></div>
+    <p class="takeaway">{{ item.summary }}</p>
+    {% set milestones = item.milestones or [] %}
+    {% if milestones %}
+    <ul class="milestones">
+      {% for m in (milestones|reverse|list)[:12] %}
+      <li><span class="when">{{ m.day[8:10] ~ '.' ~ m.day[5:7] if m.day else '' }}</span>
+        <span class="what">{{ m.text }}</span>
+        {% if m.msg_id %}<a href="{{ deeplink(chat.tg_id, m.msg_id) }}" target="_blank" rel="noopener noreferrer" aria-label="Откуда">{{ icon('external', 'sm') }}</a>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% else %}
+  <div class="card">{{ empty('Досье пока нет', 'Они начнут появляться с ближайших выпусков.', 'user') }}</div>
+{% endif %}
+{% endblock %}

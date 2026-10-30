@@ -27,7 +27,7 @@ CACHED_PURPOSES = frozenset({"summary", "score", "article", "life", "knowledge",
 CACHE_DAYS = 14
 # Длинные ответы (статья, колонка, база, лор) модель пишет минутами; в медленные
 # дни 120 секунд на них не хватает, и выпуск выходил бы без статьи и колонки
-LONG_PURPOSES = frozenset({"article", "life", "knowledge", "lore"})
+LONG_PURPOSES = frozenset({"article", "life", "knowledge", "lore", "dossier"})
 LONG_TIMEOUT_SEC = 300.0
 
 # ```json ... ``` — модели любят заворачивать ответ в разметку, даже когда просишь не надо

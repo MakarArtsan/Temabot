@@ -93,6 +93,7 @@ class DigestResult:
     digest_id: int | None = None
     lore: list[str] = field(default_factory=list)   # что нового в лоре чата за день
     knowledge: list[str] = field(default_factory=list)   # что нового в базе полезного
+    dossiers: list[str] = field(default_factory=list)    # чьи досье обновились
     people: dict[int, str] = field(default_factory=dict)   # tg_user_id → имя за день
 
     @property
@@ -935,6 +936,7 @@ async def save_result(
     await _add_heroes(chat, day, result)
     result.lore = await _update_lore(chat, day, result, llm=llm)
     result.knowledge = await _update_knowledge(chat, day, result, llm=llm)
+    result.dossiers = await _update_dossiers(chat, day, result, llm=llm)
     return result.digest_id
 
 
@@ -947,6 +949,19 @@ async def lore_context(chat: Chat) -> str:
     except Exception:
         log.warning("Лор чата не прочитался", exc_info=True)
         return ""
+
+
+async def _update_dossiers(
+    chat: Chat, day: date_type, result: DigestResult, *, llm: LLMCall
+) -> list[str]:
+    """Пополнить досье участников по темам дня (решение владельца, 30.10)."""
+    from src.digest.dossier import update_dossiers
+
+    try:
+        return await update_dossiers(chat, day, result.all_topics, result.people, llm=llm)
+    except Exception:
+        log.warning("Досье участников не обновились", exc_info=True)
+        return []
 
 
 async def _update_knowledge(

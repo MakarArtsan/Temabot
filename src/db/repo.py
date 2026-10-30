@@ -1961,6 +1961,155 @@ async def delete_knowledge(knowledge_id: int) -> bool:
     return result.endswith("1")
 
 
+# ---------------------------------------------------------------- досье участников
+
+DOSSIER_MILESTONES_MAX = 60   # вех у человека храним не больше: старые уходят
+
+
+async def list_dossiers(
+    chat_id: int, *, include_hidden: bool = False, public: bool = False
+) -> list[dict[str, Any]]:
+    """Досье группы: свежие сверху. `public` — без скрывшихся по /optout и пустых."""
+    rows = await pool.fetch(
+        """
+        select d.*, a.name, a.username, coalesce(a.hide_from_ratings, false) as opted_out
+          from dossiers d
+          left join authors a on a.tg_user_id = d.tg_user_id
+         where d.chat_id = $1 and ($2 or not d.hidden)
+           and (not $3 or (not coalesce(a.hide_from_ratings, false) and d.summary <> ''))
+         order by d.last_day desc nulls last, d.tg_user_id
+        """,
+        chat_id,
+        include_hidden,
+        public,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_dossier(chat_id: int, tg_user_id: int) -> dict[str, Any] | None:
+    row = await pool.fetchrow(
+        """
+        select d.*, a.name, a.username, coalesce(a.hide_from_ratings, false) as opted_out
+          from dossiers d left join authors a on a.tg_user_id = d.tg_user_id
+         where d.chat_id = $1 and d.tg_user_id = $2
+        """,
+        chat_id,
+        tg_user_id,
+    )
+    return dict(row) if row else None
+
+
+async def update_dossier(
+    chat_id: int,
+    tg_user_id: int,
+    *,
+    day: date_type,
+    milestones: list[dict[str, Any]] | None = None,
+    summary: str = "",
+) -> bool:
+    """Новые вехи — в конец (без повторов по тексту), характеристика — если дана.
+
+    Досье, скрытое владельцем, модель не трогает. False — не тронули.
+    """
+    db = await pool.get_pool()
+    async with db.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "select milestones, hidden from dossiers "
+            "where chat_id = $1 and tg_user_id = $2 for update",
+            chat_id,
+            tg_user_id,
+        )
+        if row is not None and row["hidden"]:
+            return False
+        current = list(row["milestones"] or []) if row else []
+        seen = {str(m.get("text", "")).strip().lower() for m in current}
+        for item in milestones or []:
+            key = str(item.get("text", "")).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                current.append(item)
+        current = current[-DOSSIER_MILESTONES_MAX:]
+        await conn.execute(
+            """
+            insert into dossiers (chat_id, tg_user_id, summary, milestones, first_day, last_day)
+            values ($1, $2, $3, $4::jsonb, $5, $5)
+            on conflict (chat_id, tg_user_id) do update set
+                milestones = excluded.milestones,
+                summary = case when $3 <> '' then $3 else dossiers.summary end,
+                first_day = least(coalesce(dossiers.first_day, $5), $5),
+                last_day = greatest(coalesce(dossiers.last_day, $5), $5),
+                updated_at = now()
+            """,
+            chat_id,
+            tg_user_id,
+            summary,
+            current,
+            day,
+        )
+    return True
+
+
+async def edit_dossier_summary(chat_id: int, tg_user_id: int, summary: str) -> bool:
+    result = await pool.execute(
+        "update dossiers set summary = $3, updated_at = now() "
+        "where chat_id = $1 and tg_user_id = $2",
+        chat_id,
+        tg_user_id,
+        summary,
+    )
+    return result.endswith("1")
+
+
+async def delete_milestone(chat_id: int, tg_user_id: int, index: int) -> bool:
+    """Убрать одну веху (по номеру в списке, с нуля)."""
+    result = await pool.execute(
+        """
+        update dossiers set milestones = milestones - $3, updated_at = now()
+         where chat_id = $1 and tg_user_id = $2 and jsonb_array_length(milestones) > $3
+        """,
+        chat_id,
+        tg_user_id,
+        index,
+    )
+    return result.endswith("1")
+
+
+async def set_dossier_hidden(chat_id: int, tg_user_id: int, hidden: bool) -> bool:
+    result = await pool.execute(
+        "update dossiers set hidden = $3, updated_at = now() "
+        "where chat_id = $1 and tg_user_id = $2",
+        chat_id,
+        tg_user_id,
+        hidden,
+    )
+    return result.endswith("1")
+
+
+async def delete_dossier(chat_id: int, tg_user_id: int) -> bool:
+    result = await pool.execute(
+        "delete from dossiers where chat_id = $1 and tg_user_id = $2", chat_id, tg_user_id
+    )
+    return result.endswith("1")
+
+
+async def day_people(chat_id: int, day: date_type, cut: time | None = None) -> dict[int, str]:
+    """Кто писал в окне выпуска за день: id → имя. Без ботов."""
+    start, end = issue_bounds(day, cut)
+    rows = await pool.fetch(
+        """
+        select distinct m.tg_user_id, coalesce(a.name, m.author_name) as name
+          from messages m left join authors a on a.tg_user_id = m.tg_user_id
+         where m.chat_id = $1 and m.date >= $2 and m.date < $3
+           and m.tg_user_id is not null and not coalesce(a.is_bot, false)
+           and coalesce(a.name, m.author_name) is not null
+        """,
+        chat_id,
+        start,
+        end,
+    )
+    return {int(r["tg_user_id"]): str(r["name"]) for r in rows}
+
+
 async def opted_out_ids() -> set[int]:
     """Кто скрылся из рейтингов (/optout или вручную) — им не заводят роль в лоре."""
     rows = await pool.fetch("select tg_user_id from authors where hide_from_ratings")

@@ -3,7 +3,7 @@
   <div class="note accent" hx-get="/jobs/{{ job.id }}?view={{ view }}" hx-trigger="load delay:3s" hx-swap="outerHTML">
     {{ icon('clock') }}<p>{% if job.resumed %}Сервер перезапускался — продолжаю {{ job.title }}: уже разобранное
       берётся из сохранённого, заново не оплачивается. Уже {{ job.elapsed }} с.{% else %}Собираю {{ job.title }} — уже {{ job.elapsed }} с.
-      {% if view == 'kb' %}Модель смотрит рабочие темы каждого дня по очереди{% if job.note %}, сейчас — день {{ job.note }}{% endif %}.{% else %}Модель разбирает каждое обсуждение дня, это может занять несколько минут.{% endif %}{% endif %}
+      {% if view in ('kb', 'dossier') %}Модель смотрит темы каждого дня по очереди{% if job.note %}, сейчас — день {{ job.note }}{% endif %}.{% else %}Модель разбирает каждое обсуждение дня, это может занять несколько минут.{% endif %}{% endif %}
       Страницу можно не обновлять и даже закрыть — работа не потеряется.</p>
   </div>
 {% elif job.error %}
@@ -11,5 +11,6 @@
 {% else %}
   <div class="note ok">{{ icon('check') }}<p>Готово: {{ job.title }} за {{ job.elapsed }} с.
     {% if view == 'kb' %}Новых записей: {{ job.result or 0 }}. <a href="/kb">Обновить страницу</a>
+    {% elif view == 'dossier' %}Досье пополнились у {{ job.result or 0 }} {{ plural(job.result or 0, 'человека', 'человек', 'человек') }}. <a href="/dossiers">Обновить страницу</a>
     {% elif job.result %}<a href="/digests/{{ job.result }}">Открыть дайджест</a>{% else %}<a href="/digests">К дайджестам</a>{% endif %}</p></div>
 {% endif %}

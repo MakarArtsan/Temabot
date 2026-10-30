@@ -650,3 +650,12 @@ details.more[open] > summary { margin-bottom: 10px; }
 .kb-body .meta span { display: inline-flex; align-items: center; gap: 5px; }
 .kb-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
 @media (max-width: 520px) { .kb-body { padding-left: 0; } }
+
+/* ------------------------------------------------------------- досье */
+.milestones { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.milestones li { display: flex; gap: 10px; align-items: baseline; font-size: 14.5px; line-height: 1.5; }
+.milestones .when { flex: none; width: 44px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+.milestones .what { flex: 1; min-width: 0; }
+.milestones a, .milestones .link-btn { flex: none; color: var(--muted); }
+.link-btn { border: 0; background: none; cursor: pointer; padding: 0 4px; font: inherit; color: var(--muted); }
+.link-btn:hover { color: var(--bad-ink); }

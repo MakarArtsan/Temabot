@@ -128,6 +128,17 @@ def extras_visible(chat: Chat, viewer: Viewer) -> bool:
     return ratings_visible(chat, viewer)
 
 
+def dossiers_visible(chat: Chat, viewer: Viewer) -> bool:
+    """Досье участникам — только когда владелец открыл их галочкой, и в режиме «всё».
+
+    Владелец на своей странице участников видит ровно то же, что увидят они:
+    пока галочка выключена, вкладки нет и у него.
+    """
+    from src.digest import dossier as dossier_mod
+
+    return chat.portal == "all" and dossier_mod.public(chat)
+
+
 async def page_context(viewer: Viewer, chat: Chat, tab: str) -> dict[str, Any]:
     """Общее для всех страниц группы: вкладки нижней панели и кто смотрит."""
     extras = extras_visible(chat, viewer)
@@ -137,6 +148,8 @@ async def page_context(viewer: Viewer, chat: Chat, tab: str) -> dict[str, Any]:
     if extras:
         tabs += [("ratings", f"/g/{chat.id}/ratings", "trophy", "Рейтинги"),
                  ("lore", f"/g/{chat.id}/lore", "book", "Лор")]
+    if dossiers_visible(chat, viewer):
+        tabs.append(("dossiers", f"/g/{chat.id}/dossiers", "user", "Досье"))
     return {
         "chat": chat,
         "is_owner": viewer.is_owner,
@@ -267,6 +280,17 @@ async def portal_kb(request: Request, chat_id: int, q: str = "", cat: str = "") 
         q=q, cat=cat, categories=kb.CATEGORIES, marks=kb.CATEGORY_MARKS,
     )
     return render(request, "portal/kb.html", context)
+
+
+@router.get("/g/{chat_id}/dossiers", response_class=HTMLResponse)
+async def portal_dossiers(request: Request, chat_id: int) -> HTMLResponse:
+    """Досье участников: вехи и характеристика. Без скрытых и скрывшихся по /optout."""
+    viewer, chat = await open_chat(request, chat_id)
+    if not dossiers_visible(chat, viewer):
+        raise HTTPException(status_code=404)
+    context = await page_context(viewer, chat, "dossiers")
+    context["rows"] = await repo.list_dossiers(chat.id, public=True)
+    return render(request, "portal/dossiers.html", context)
 
 
 @router.get("/g/{chat_id}/lore", response_class=HTMLResponse)

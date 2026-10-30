@@ -650,7 +650,33 @@ def launch_kb_backfill(chat: Chat, target: date_type, *, resumed: int = 0) -> jo
     return job
 
 
-LAUNCHERS = {"preview": launch_preview, "digest": launch_digest, "kb": launch_kb_backfill}
+def launch_dossier_backfill(chat: Chat, target: date_type, *, resumed: int = 0) -> jobs.Job:
+    """Досье участников по архиву выпусков — в фоне."""
+    holder: dict[str, jobs.Job] = {}
+
+    def progress(text: str) -> None:
+        if "job" in holder:
+            holder["job"].note = text
+
+    async def build() -> int:
+        from src.digest import dossier as dossier_mod
+        from src.digest.pipeline import issue_cut
+
+        touched = await dossier_mod.backfill(chat, target, cut=issue_cut(chat),
+                                             progress=progress)
+        return len(set(touched))
+
+    job = jobs.start(
+        f"dossier:{chat.id}", f"досье по архиву до {target:%d.%m}", build,
+        spec={"kind": "dossier", "chat_id": chat.id, "day": target.isoformat()},
+        resumed=resumed,
+    )
+    holder["job"] = job
+    return job
+
+
+LAUNCHERS = {"preview": launch_preview, "digest": launch_digest, "kb": launch_kb_backfill,
+             "dossier": launch_dossier_backfill}
 
 
 async def resume_jobs() -> None:
@@ -717,7 +743,7 @@ async def job_status(
     request: Request, job_id: str, view: str = "digest", _: dict = Depends(auth.require_owner)
 ) -> HTMLResponse:
     """Состояние фоновой задачи — страница опрашивает его, пока задача идёт."""
-    view = view if view in {"preview", "kb"} else "digest"
+    view = view if view in {"preview", "kb", "dossier"} else "digest"
     job = jobs.get(job_id)
     if job is None:
         # после перезапуска задача поднимается не сразу — пусть страница подождёт
@@ -1146,6 +1172,92 @@ async def kb_settings(
     auth.check_csrf(request, csrf_token)
     await repo.update_chat_settings(chat_id, {"knowledge": {"enabled": enabled == "1"}})
     return RedirectResponse(f"/kb?chat={chat_id}", status_code=303)
+
+
+# ------------------------------------------------------------ досье участников
+
+@app.get("/dossiers", response_class=HTMLResponse)
+async def dossiers_page(
+    request: Request, chat: int | None = None, _: dict = Depends(auth.require_owner)
+) -> HTMLResponse:
+    """Досье участников: вехи и характеристика. Только владельцу, пока он не откроет."""
+    from src.digest import dossier as dossier_mod
+
+    chats = await repo.list_chats()
+    current = next((c for c in chats if c.id == chat), chats[0] if chats else None)
+    rows = await repo.list_dossiers(current.id, include_hidden=True) if current else []
+    return render(request, "dossiers.html", {
+        "active": "dossiers", "chats": chats, "chat": current,
+        "rows": [r for r in rows if not r["hidden"]],
+        "hidden_rows": [r for r in rows if r["hidden"]],
+        "enabled": dossier_mod.enabled(current) if current else False,
+        "public": dossier_mod.public(current) if current else False,
+    })
+
+
+@app.post("/dossiers/settings/{chat_id}")
+async def dossiers_settings(
+    request: Request, chat_id: int, field: str = Form(...), value: str = Form("0"),
+    csrf_token: str = Form(""), _: dict = Depends(auth.require_owner),
+) -> Response:
+    """«Вести досье» и «Показывать участникам» — переключатели владельца."""
+    from src.digest import dossier as dossier_mod
+
+    auth.check_csrf(request, csrf_token)
+    if field not in {"enabled", "public"}:
+        raise HTTPException(400, "Неизвестная настройка")
+    chat = await repo.get_chat_by_id(chat_id)
+    if chat is None:
+        raise HTTPException(404, "Группа не найдена")
+    patch = {**dossier_mod.settings_of(chat), field: value == "1"}
+    await repo.update_chat_settings(chat_id, {"dossier": patch})
+    return RedirectResponse(f"/dossiers?chat={chat_id}", status_code=303)
+
+
+@app.post("/dossiers/backfill/{chat_id}", response_class=HTMLResponse)
+async def dossiers_backfill(
+    request: Request, chat_id: int, csrf_token: str = Form(""),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Собрать досье по архиву выпусков. В группу ничего не уходит."""
+    auth.check_csrf(request, csrf_token)
+    chat = await repo.get_chat_by_id(chat_id)
+    if chat is None:
+        raise HTTPException(404, "Группа не найдена")
+    job = launch_dossier_backfill(chat, local_today())
+    return render(request, "_job.html", {"job": job, "view": "dossier", "chat_id": chat.id})
+
+
+@app.post("/dossiers/{chat_id}/{tg_user_id}", response_class=HTMLResponse)
+async def dossier_update(
+    request: Request, chat_id: int, tg_user_id: int, action: str = Form(...),
+    csrf_token: str = Form(""), summary: str = Form(""), index: int = Form(-1),
+    _: dict = Depends(auth.require_owner),
+) -> HTMLResponse:
+    """Правка досье: характеристика, веха, скрыть или вернуть, удалить."""
+    from src.digest import dossier as dossier_mod
+
+    auth.check_csrf(request, csrf_token)
+    if await repo.get_dossier(chat_id, tg_user_id) is None:
+        raise HTTPException(404, "Досье не найдено")
+    if action == "delete":
+        await repo.delete_dossier(chat_id, tg_user_id)
+        return HTMLResponse("")
+    if action == "summary":
+        await repo.edit_dossier_summary(chat_id, tg_user_id,
+                                        summary.strip()[:dossier_mod.SUMMARY_MAX])
+    elif action == "milestone":
+        if not await repo.delete_milestone(chat_id, tg_user_id, index):
+            raise HTTPException(400, "Такой вехи нет")
+    elif action in {"hide", "show"}:
+        await repo.set_dossier_hidden(chat_id, tg_user_id, action == "hide")
+    else:
+        raise HTTPException(400, "Неизвестное действие")
+    row = await repo.get_dossier(chat_id, tg_user_id)
+    chat = await repo.get_chat_by_id(chat_id)
+    return render(request, "_dossier_item.html", {
+        "item": row, "chat_id": chat_id, "chat_tg_id": chat.tg_id if chat else None,
+    })
 
 
 # ------------------------------------------------------------------ лор чата
