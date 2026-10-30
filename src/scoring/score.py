@@ -96,9 +96,11 @@ def compute(
 
     usefulness = rubric.usefulness / 10.0
     interest = rubric.interest / 10.0
-    if rubric.kind in OFFTOPIC_KINDS:
+    if rubric.kind in OFFTOPIC_KINDS or rubric.kind == "announcement":
         # личную новость или историю нельзя «применить», но людям она важна:
-        # для них польза — это интерес чата
+        # для них польза — это интерес чата. То же с событиями: победу Саши в
+        # конкурсе (29.10) модель оценила «интересно 9, применимо 2», и главная
+        # новость дня не прошла порог, уступив подсчёту токенов
         usefulness = max(usefulness, interest)
     specificity = rubric.specificity / 10.0
     relevance = rubric.relevance / 10.0

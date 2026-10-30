@@ -551,3 +551,23 @@ async def test_rubric_without_repeat_has_no_extra_block():
     await rate_thread(a_thread(), Chat(id=1, tg_id=-100), llm=llm)
 
     assert "Похожее уже обсуждали" not in llm.calls[0]["messages"][1]["content"]
+
+
+def test_members_win_is_not_judged_as_a_lifehack():
+    """29.10: победа Саши — «интересно 9, применимо 2» — уступала подсчёту токенов.
+
+    Числа — как в базе после пересборки: у события теперь в зачёт идёт интерес чата.
+    """
+    from src.scoring import score as scoring
+    from src.scoring.llm_rubric import Rubric
+
+    def result(kind: str, use: float, interest: float, spec: float, eng: float) -> float:
+        return scoring.compute(
+            engagement=eng, novelty=0.8, normalized={},
+            rubric=Rubric(kind=kind, usefulness=use, interest=interest,
+                          specificity=spec, relevance=8 if kind == "announcement" else 9),
+        ).score
+
+    win = result("announcement", 2, 9, 6, 0.9275)
+    assert win >= 0.79, "раньше 0.67 — ниже порога выпуска"
+    assert result("insight", 2, 9, 6, 0.9275) < win, "совету без пользы интерес не помогает"
